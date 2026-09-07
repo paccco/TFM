@@ -28,6 +28,7 @@ Actúa como frontera perimetral de seguridad y adaptador de protocolos del siste
         \item \textit{Fase 3 (Semántica Agent Card):} Comprobación de que la habilidad solicitada y sus parámetros son compatibles con la ficha del agente.
         \item \textit{Fase 4 (Coherencia de Ciclo de Vida):} Validación del estado de la tarea receptora para impedir operaciones fuera de turno o desincronizadas.
     \end{enumerate}
+    \item \textbf{Protocolo de Handshake:} El flujo completo de autenticación mutua de tenants, consulta de lista blanca y selección dinámica de la Agent Card se encuentra formalizado en la Figura~\ref{fig:handshake_flow} (Sección~\ref{sec:protocols}).
 \end{itemize}
 
 \subsubsection{Capa 3: Gobernanza y Orquestación FSM (C\# / .NET 9)}
@@ -53,3 +54,6 @@ El sistema desacopla intencionadamente las necesidades analíticas y legales de 
     \item \textbf{Track 1 (Raw Transcript Store - Base de Datos SQL Relacional):} Bitácora inmutable, cronológica y \textit{append-only} que almacena cada mensaje literal, firma criptográfica, emisor y marca de tiempo. Diseñada para auditoría legal, forense y cumplimiento contractual.
     \item \textbf{Track 2 (Hot State Store - Redis In-Memory):} Almacena el \textit{Fact Sheet} consolidado (SKUs, precios acordados, condiciones Incoterms, concesiones) y gobierna los cerrojos de concurrencia y alternancia de turnos con latencias inferiores a $2\text{ ms}$.
 \end{itemize}
+
+La interacción integral entre las capas del orquestador, los bloqueos de turno en Redis Hot State, la evaluación del Deterministic Guard y las transiciones deterministas de la FSM a lo largo del ciclo de vida se ilustra formalmente en la Figura~\ref{fig:negotiation_cycle} (Sección~\ref{sec:fsm}).
+

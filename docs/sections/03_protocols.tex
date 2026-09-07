@@ -7,6 +7,24 @@ El estándar A2A establece un marco formal e interoperable para la comunicación
 \subsection{Estructura de la Agent Card (/.well-known/agent.json)}
 El punto de anclaje semántico del sistema es su Agent Card, expuesta públicamente en la ruta estandarizada \texttt{/.well-known/agent.json}. Esta especificación describe las habilidades (\textit{skills}) ofrecidas por el orquestador, los esquemas de entrada y salida, así como los requerimientos criptográficos de autenticación para cada operación soportada.
 
+\subsection{Protocolo de Handshake y Negociación de Agent Cards}
+Antes de dar inicio formal a una negociación comercial, los agentes y sus respectivas entidades (\textit{tenants}) deben establecer un canal seguro de confianza mutua mediante el protocolo de \textit{handshake} (apretón de manos). Este procedimiento garantiza que únicamente contrapartes autorizadas y verificadas puedan acceder al catálogo de servicios y comenzar el intercambio de propuestas.
+
+Tal como se detalla en la Figura~\ref{fig:handshake_flow}, el flujo opera a través de las siguientes fases secuenciales:
+\begin{enumerate}
+    \item \textbf{Solicitud de Conexión y Validación de Identidad:} El \textit{Tenant A} manifiesta su intención de negociar con el \textit{Tenant B} a través del software orquestador. El sistema procede inmediatamente a validar las credenciales de identidad del \textit{Agente A}. En caso de discrepancia criptográfica o firma inválida, la sesión se aborta con error terminal.
+    \item \textbf{Verificación en Lista Blanca (\textit{Whitelist}):} El orquestador consulta al \textit{Tenant B} para verificar si el \textit{Tenant A} figura en su lista de confianza permitida. Si la verificación resulta desfavorable, la comunicación se clausura impidiendo accesos no autorizados.
+    \item \textbf{Entrega del Catálogo de Agent Cards:} Una vez aprobada la conexión, el \textit{Tenant B} suministra su catálogo de tarjetas de agente (\textit{Agent Cards}) disponibles. El orquestador transmite dicho catálogo al \textit{Agente A}.
+    \item \textbf{Selección de Habilidad y Validación Cruzada:} El \textit{Agente A} inspecciona el catálogo y selecciona la tarjeta de agente idónea para la transacción. Si el agente requerido no está disponible, el flujo finaliza con estado \texttt{DECLINE}. Si existe, se emite una orden de selección (\texttt{SELECT}), tras la cual ambas partes ejecutan una verificación mutua de credenciales con el \textit{Agente B} antes de dar por completado el apretón de manos y transicionar al estado operativo inicial \texttt{on\_board}.
+\end{enumerate}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.85\textwidth,height=0.72\textheight,keepaspectratio]{handshake_sequence.png}
+    \caption{Secuencia de Handshake bilateral: autenticación de tenants, validación en lista blanca (\textit{whitelist}), distribución del catálogo de Agent Cards y verificación cruzada de credenciales criptográficas.}
+    \label{fig:handshake_flow}
+\end{figure}
+
 \subsection{Métodos JSON-RPC 2.0 Expuestos por el Gateway}
 El Gateway implementa cuatro primitivas principales de negociación:
 \begin{itemize}
