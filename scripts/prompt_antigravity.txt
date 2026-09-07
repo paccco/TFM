@@ -1,8 +1,0 @@
-### Integración con OpenProject CLI (`scripts/op_cli.py`)
-- **Descubrimiento inicial:** Ejecuta `python3 scripts/op_cli.py discover` para verificar los IDs de estados y tipos de la instancia local si los desconoces.
-- **Inicio de tarea:**
-  `python3 scripts/op_cli.py update --id <ID> --status in_progress --comment "Iniciando rama feature/OP-<ID>"`
-- **Trazabilidad en commits:**
-  `python3 scripts/op_cli.py comment --id <ID> --text "Commit <HASH>: <descripción>"`
-- **Cierre y registro de consumo:** Tras mergear a develop y actualizar la documentación LaTeX:
-  `python3 scripts/op_cli.py update --id <ID> --status closed --tokens <NUMERO_TOKENS> --model "<NOMBRE_MODELO>" --comment "Implementación terminada y documentación LaTeX compilada."`

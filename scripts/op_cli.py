@@ -19,6 +19,13 @@ import argparse
 import requests
 from requests.auth import HTTPBasicAuth
 
+# Cargar variables desde .env si existe
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # --- Configuración Base ---
 OPENPROJECT_URL = os.getenv("OPENPROJECT_URL", "http://localhost:8080").rstrip("/")
 API_KEY = os.getenv("OPENPROJECT_API_KEY", "")
@@ -82,6 +89,7 @@ def discover_schema():
     """Permite al agente listar tipos, estados y custom fields de la instancia."""
     auth = _get_auth()
     endpoints = {
+        "projects": f"{OPENPROJECT_URL}/api/v3/projects",
         "types": f"{OPENPROJECT_URL}/api/v3/types",
         "statuses": f"{OPENPROJECT_URL}/api/v3/statuses",
         "custom_fields": f"{OPENPROJECT_URL}/api/v3/custom_fields",
@@ -89,9 +97,15 @@ def discover_schema():
     discovery = {}
     for key, url in endpoints.items():
         r = requests.get(url, auth=auth)
+        if r.status_code == 404:
+            discovery[key] = []
+            continue
         data = _handle_response(r)
         items = data.get("_embedded", {}).get("elements", [])
-        discovery[key] = [{"id": item["id"], "name": item["name"]} for item in items]
+        if key == "projects":
+            discovery[key] = [{"id": item["id"], "identifier": item.get("identifier"), "name": item["name"]} for item in items]
+        else:
+            discovery[key] = [{"id": item["id"], "name": item["name"]} for item in items]
 
     print(json.dumps(discovery, indent=2, ensure_ascii=False))
 

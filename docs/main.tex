@@ -1,0 +1,79 @@
+\documentclass[11pt,a4paper]{article}
+
+% --- Paquetes de Idioma y Codificación ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-tabla]{babel}
+
+% --- Paquetes Matemáticos y Tablas ---
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+
+% --- Geometría y Formato de Página ---
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\small Orquestador Stateless A2A}
+\lhead{\small Especificación Técnica y Arquitectura}
+\cfoot{\thepage}
+
+% --- Colores y Enlaces ---
+\usepackage{xcolor}
+\definecolor{primaryblue}{RGB}{24, 75, 120}
+\definecolor{codebg}{RGB}{248, 249, 250}
+\definecolor{codegray}{RGB}{100, 100, 100}
+\definecolor{codegreen}{RGB}{40, 140, 50}
+
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=primaryblue,
+    citecolor=primaryblue,
+    urlcolor=primaryblue
+}
+
+% --- Configuración de Bloques de Código ---
+\usepackage{listings}
+\lstset{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\footnotesize,
+    breaklines=true,
+    captionpos=b,
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{primaryblue}\bfseries,
+    stringstyle=\color{orange!80!black},
+    numbers=left,
+    numberstyle=\tiny\color{codegray},
+    numbersep=8pt,
+    frame=single,
+    rulecolor=\color{black!15}
+}
+
+% --- Título y Metadatos ---
+\title{\textbf{\LARGE Orquestador Stateless de Negociación A2A}\\[0.4cm]
+\large Especificación Arquitectónica, Gobernanza Determinista (FSM)\\y Persistencia Dual-Track en C\# (.NET 9)}
+\author{\textbf{Equipo de Arquitectura e Ingeniería}\\Trabajo de Fin de Máster}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+El presente documento describe la arquitectura técnica formal, la especificación de protocolos y las garantías deterministas del Orquestador Stateless de Negociación A2A. El sistema opera sobre ASP.NET Core y .NET 9, mediando transacciones comerciales automatizadas entre agentes inteligentes bajo el estándar Agent-to-Agent (A2A) mediante invocación remota JSON-RPC 2.0. Se detalla la estructura desacoplada de cinco capas, la FSM determinista en código C\#, el mecanismo de compuerta con reglas duras de negocio (\textit{Deterministic Guard}), el pipeline de validación en cascada en 4 fases, y el modelo de persistencia \textit{Dual-Track} que combina un registro inmutable en SQL relacional con almacenamiento de ultra-baja latencia en Redis.
+\end{abstract}
+
+\vspace{0.5cm}
+\tableofcontents
+\newpage
+
+% --- Secciones Técnicas Modulares ---
+\input{sections/01_architecture}
+\newpage
+\input{sections/02_fsm_states}
+\newpage
+\input{sections/03_protocols}
+
+\end{document}

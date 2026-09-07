@@ -1,0 +1,30 @@
+# Antigravity Runtime Configuration
+version: "1.0"
+project:
+  name: "a2a-stateless-orchestrator"
+  description: "Orquestador Stateless de Negociación A2A con FSM Determinista y Persistencia Dual-Track"
+  version: "0.1.0"
+  tech_stack:
+    backend: "dotnet-9.0"
+    language: "csharp-13"
+    documentation: "latex-pdflatex"
+    scripts: "python-3.13"
+    state_store:
+      hot_state: "redis-7"
+      transcript_store: "postgresql-16"
+
+agent:
+  rules_directory: ".agent/rules"
+  workflows_directory: ".agent/workflows"
+  logs_directory: ".agent/logs"
+  conventions:
+    gitflow: "gitflow.md"
+    task_tracker: "openproject.md"
+    system_rules: "system_rules.md"
+
+workspace:
+  src_root: "src"
+  tests_root: "tests"
+  docs_root: "docs"
+  scripts_root: "scripts"
+  diagrams_root: "mermaids"

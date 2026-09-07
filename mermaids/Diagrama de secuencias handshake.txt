@@ -1,0 +1,45 @@
+sequenceDiagram
+    autonumber
+    actor Tenant A as Tenant A
+    participant Agente de A as Agente de A
+    participant Software as Software
+    participant Agente de B as Agente de B
+    actor Tenant B as Tenant B
+
+    Tenant A->>Software: Soy A y quiero negociar con B
+    Software->>Agente de A: Valida que las credenciales de A sean correctas
+
+    alt : no son correctas
+        Agente de A->>Software: ERROR
+        Software-->>Tenant A: ERROR (Fin ejecucion)
+    end
+
+    Agente de A->>Software: OK
+    Software->>Tenant B: ¿A puede negociar contigo?(Comprueba la whitelist)
+
+    alt : no puede
+        Tenant B->>Software: ERROR
+        Software-->>Tenant A: ERROR (Fin ejecucion)
+    end
+
+    Tenant B->>Software: OK (Manda su catalogo de A_cards)
+    Software->>Agente de A: Reenvia el catálogo
+
+    alt : No existe el agente deseado
+        Agente de A->>Software: DECLINE
+        Software->>Tenant B: DECLINE
+        Software-->>Tenant A: DECLINE (Fin ejecucion)
+    end
+
+    Agente de A->>Software: SELECT
+    Software->>Tenant B: SELECT
+    Tenant B->>Software: Valida credenciales
+    Software-->>Agente de B: Valida credenciales
+
+    alt : no son correctas
+        Agente de B->>Software: ERROR
+        Software->>Tenant B: ERROR (Fin ejecucion)
+        Software-->>Tenant A: ERROR (Fin ejecucion)
+    end
+
+    Agente de B->>Software: OK

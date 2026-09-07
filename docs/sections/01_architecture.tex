@@ -1,0 +1,55 @@
+\section{Arquitectura del Sistema: Orquestador Stateless de 5 Capas}
+\label{sec:architecture}
+
+\subsection{Visión General y Principios de Diseño}
+El sistema se concibe como un orquestador \textit{stateless}, desacoplado y de baja latencia desarrollado sobre la plataforma ASP.NET Core y C\# (.NET 9). Su propósito primordial reside en arbitrar y gobernar transacciones comerciales automatizadas entre agentes inteligentes autónomos empleando el protocolo estándar \textbf{A2A (Agent-to-Agent)} mediante mensajes estructurados bajo la especificación \textbf{JSON-RPC 2.0}.
+
+La premisa arquitectónica directriz es la \textbf{garantía de determinismo absoluto}. Mientras que los Modelos de Lenguaje Masivos (LLM) son probabilísticos por naturaleza, las condiciones contractuales, las restricciones financieras y las transiciones del protocolo de negociación deben ser estrictamente matemáticas e inmunes a alucinaciones. Por consiguiente, la máquina de estados finitos (FSM) y los módulos de evaluación de reglas se ejecutan proceduralmente en código nativo C\#, relegando la función del LLM exclusivamente a la inferencia táctica y a la generación de deltas estructurados (\texttt{facts\_delta}).
+
+\subsection{Estructura de las Cinco Capas}
+
+\subsubsection{Capa 1: Clientes A2A (Entorno Externo)}
+Constituye el estrato de agentes autónomos contrapartes (compradores o suministradores) que operan en plataformas heterogéneas. Dichos agentes:
+\begin{itemize}
+    \item Inspeccionan de forma autónoma las capacidades del sistema leyendo la \textit{Agent Card} expuesta públicamente en la ruta estandarizada \texttt{/.well-known/agent.json}.
+    \item Inician y prosiguen las negociaciones mediante métodos formales JSON-RPC 2.0 (\texttt{create\_task}, \texttt{send\_message}, \texttt{get\_task}).
+    \item Respetan la alternancia estricta de turnos impuesta por el orquestador.
+\end{itemize}
+
+\subsubsection{Capa 2: Gateway A2A (ASP.NET Core / C\#)}
+Actúa como frontera perimetral de seguridad y adaptador de protocolos del sistema:
+\begin{itemize}
+    \item \textbf{Seguridad Perimetral:} Aplica autenticación mutua TLS (mTLS), verificación criptográfica de cabeceras, cuotas por tenant y limitación de tasa (\textit{rate limiting}) basada en algoritmos Token Bucket.
+    \item \textbf{Skill Dispatcher:} Enruta los mensajes entrantes hacia las habilidades internas sin comprometer identificadores internos de infraestructura.
+    \item \textbf{Pipeline de Validación en Cascada en 4 Fases:} Todo mensaje entrante debe superar secuencialmente cuatro filtros antes de penetrar en el orquestador:
+    \begin{enumerate}
+        \item \textit{Fase 1 (Transporte):} Verificación de integridad HTTP y conformidad estructural JSON-RPC 2.0.
+        \item \textit{Fase 2 (Esquema A2A):} Validación de esquemas (\texttt{TaskRequest}, \texttt{MessagePart}, \texttt{DataPart}).
+        \item \textit{Fase 3 (Semántica Agent Card):} Comprobación de que la habilidad solicitada y sus parámetros son compatibles con la ficha del agente.
+        \item \textit{Fase 4 (Coherencia de Ciclo de Vida):} Validación del estado de la tarea receptora para impedir operaciones fuera de turno o desincronizadas.
+    \end{enumerate}
+\end{itemize}
+
+\subsubsection{Capa 3: Gobernanza y Orquestación FSM (C\# / .NET 9)}
+Constituye el núcleo del sistema. Está empaquetada como librería de dominio interna en el mismo Pod de Kubernetes que el Gateway, eliminando sobrecostes de transporte de red o serialización entre capas:
+\begin{itemize}
+    \item \textbf{Arquitectura 100\% Stateless:} Ninguna instancia retiene estado en memoria volátil entre peticiones. En cada solicitud entrante, el estado factual consolidado y el bloqueo de turno se rehidratan atómicamente desde el almacenamiento externo.
+    \item \textbf{FSM Unitaria Determinista:} Define el espacio formal de estados y transiciones legales.
+    \item \textbf{Deterministic Guard:} Motor de reglas de negocio rígidas programado en C\# que evalúa márgenes mínimos de rentabilidad, stock disponible en tiempo real, límites de crédito comercial y plazos logísticos sin intervención probabilística.
+    \item \textbf{Meta-Orquestador Fan-Out / Fan-In:} Gestiona subastas y negociaciones multilaterales concurrentes (1 comprador frente a $N$ proveedores) utilizando primitivas asíncronas \texttt{Task.WhenAll} y aislamiento de cancelación con \texttt{CancellationTokenSource}.
+    \item \textbf{Evaluador MCDA:} Resuelve adjudicaciones mediante un análisis multicriterio de decisión ponderado basado en una función de utilidad formal.
+\end{itemize}
+
+\subsubsection{Capa 4: Capa Cognitiva (LLM SDK)}
+Interactúa con modelos fundacionales mediante un SDK tipado:
+\begin{itemize}
+    \item Se comunica mediante \textit{Structured Outputs} (JSON Schema estricto), produciendo un objeto \texttt{facts\_delta} que resume las modificaciones cuantitativas de la propuesta.
+    \item Dispone de un \textbf{Bucle de Autocorrección} (\textit{Self-Correction Loop}): si la propuesta es rechazada sintácticamente o por transición ilegal (HTTP 422), el agente reinyecta el error en su prompt con un límite de reintentos $N \in \{2, 3\}$. Si se agota el umbral, la sesión se congela automáticamente.
+\end{itemize}
+
+\subsubsection{Capa 5: Persistencia Dual-Track State Store}
+El sistema desacopla intencionadamente las necesidades analíticas y legales de las necesidades de control de concurrencia en tiempo real:
+\begin{itemize}
+    \item \textbf{Track 1 (Raw Transcript Store - Base de Datos SQL Relacional):} Bitácora inmutable, cronológica y \textit{append-only} que almacena cada mensaje literal, firma criptográfica, emisor y marca de tiempo. Diseñada para auditoría legal, forense y cumplimiento contractual.
+    \item \textbf{Track 2 (Hot State Store - Redis In-Memory):} Almacena el \textit{Fact Sheet} consolidado (SKUs, precios acordados, condiciones Incoterms, concesiones) y gobierna los cerrojos de concurrencia y alternancia de turnos con latencias inferiores a $2\text{ ms}$.
+\end{itemize}

@@ -1,0 +1,78 @@
+# ==============================================================================
+# .gitignore - Orquestador Stateless de Negociación A2A
+# ==============================================================================
+
+# --- .NET y C# ---
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+*.user
+*.userosscache
+*.suo
+*.userprefs
+*.sln.docstates
+*.nupkg
+.dotnet/
+TestResults/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# --- Documentación LaTeX ---
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.bbl
+*.blg
+*.lof
+*.lot
+*.nav
+*.snm
+*.vrb
+*.bcf
+*.run.xml
+
+# --- Secretos y Variables de Entorno ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+
+# --- Bases de datos y Volúmenes locales ---
+postgres_data/
+redis_data/
+*.sqlite
+*.db
+
+# --- Entorno de Agentes (preservar estructura y reglas) ---
+.agent/logs/*
+!.agent/logs/.gitkeep
+
+# --- Editores y Sistema Operativo ---
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

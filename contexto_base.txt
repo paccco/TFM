@@ -1,0 +1,66 @@
+CONTEXTO DEL PROYECTO: ORQUESTADOR STATELESS DE NEGOCIACIÓN A2A
+
+1. RESUMEN EJECUTIVO
+El proyecto consiste en el desarrollo de un orquestador stateless, desacoplado y de baja latencia para gobernar negociaciones comerciales entre agentes de inteligencia artificial utilizando el estándar público A2A (Agent-to-Agent). Su objetivo primordial es garantizar el determinismo del flujo mediante una Máquina de Estados Finitos (FSM) ejecutada proceduralmente en código, impidiendo que alucinaciones, respuestas probabilísticas o saltos de estado inválidos por parte de los LLMs corrompan las reglas de negocio y los acuerdos contractuales.
+
+2. ARQUITECTURA DEL SISTEMA POR CAPAS
+
+Capa 1: Clientes A2A (Entorno Externo)
+- Representa a los agentes autónomos externos (compradores o proveedores).
+- Descubren dinámicamente las capacidades del sistema leyendo la Agent Card pública.
+- Gestionan el ciclo de vida de la negociación emitiendo peticiones estándar A2A (create_task, send_message, get_task) bajo el protocolo JSON-RPC 2.0.
+
+Capa 2: Gateway A2A (ASP.NET Core / C#)
+- Actúa como frontera perimetral de seguridad y adaptador de protocolos.
+- Expone el catálogo de capacidades y esquemas en /.well-known/agent.json.
+- Aplica seguridad perimetral mediante autenticación/autorización, mTLS, control de cuotas y rate limiting.
+- Despacho desacoplado (Skill Dispatcher): enruta las peticiones según la habilidad solicitada sin exponer identificadores internos.
+- Pipeline de validación en cascada en 4 fases antes de transferir la carga al orquestador:
+  1. Validación estructural y de transporte (cabeceras, JSON-RPC 2.0).
+  2. Conformidad de esquema A2A (TaskRequest, Message Parts, DataPart schema).
+  3. Validación semántica contra la Agent Card (existencia de skill e inputs conformes).
+  4. Coherencia de ciclo de vida (acción legal para el estado actual de la tarea).
+- Traducción de protocolos: convierte payloads A2A en DTOs fuertemente tipados de C#.
+
+Capa 3: Capa de Gobernanza y Orquestación FSM (C# / .NET)
+- Empaquetada como módulo/librería interna dentro del mismo Pod del orquestador en Kubernetes para evitar saltos de red y latencias de serialización.
+- Arquitectura 100% stateless: no retiene memoria de sesión en proceso; la única fuente de verdad se rehidrata desde el almacenamiento externo.
+- FSM Unitaria (Stateless en C#): gobierna transiciones legales y turnos de interacción de forma determinista.
+- Deterministic Guard: motor de reglas empresariales en C# (márgenes mínimos, stock real, límites de crédito, plazos de entrega) que audita acuerdos sin intervención de LLMs.
+- Meta-Orquestador Fan-Out / Fan-In: coordina negociaciones multilaterales concurrentes (1 comprador frente a N proveedores) usando Task.WhenAll y CancellationTokenSource para control de límites de tiempo con aislamiento total entre canales.
+- Evaluador Determinista MCDA: resuelve subastas multilaterales calculando una función de utilidad ponderada en C# (Score = w1·P + w2·T + w3·D + w4·R), finalizando con complete_task al ganador y cancel_task al resto.
+
+Capa 4: Capa Cognitiva (LLM SDK)
+- Responsable exclusiva de la persuasión, generación de lenguaje natural y razonamiento táctico.
+- Obligada a responder mediante Structured Outputs (JSON Schema) emitiendo el delta fáctico (facts_delta) de la propuesta.
+- Bucle de autocorrección (Self-Correction Loop): si el orquestador detecta un error de formato o transición inválida (HTTP 422), el agente reinyecta el error en su prompt con un límite estricto de reintentos (N = 2 o 3) antes de derivar a mediación o congelar la sesión.
+
+Capa 5: Persistencia Dual-Track State Store
+- Track 1 (Raw Transcript / BD Relacional SQL): registro inmutable, cronológico y append-only de cada turno (emisor, mensaje literal, timestamp) para auditoría legal y análisis forense.
+- Track 2 (Negotiation Facts / Redis): objeto de estado fáctico consolidado y acumulativo (SKU, precios, cantidades, Incoterms, puntos acordados, puntos pendientes, log de concesiones). Permite lecturas de ultra-baja latencia (<2 ms) y bloqueos de concurrencia.
+
+3. MAPEO BIDIRECCIONAL DE ESTADOS
+- on_board <--> working: fase activa de diálogo, ofertas y contraofertas.
+- board_format_err <--> input_required: error sintáctico o de formato en el payload de negociación; activa autocorrección del LLM.
+- validation <--> evaluating: revisión determinista del Fact Sheet contra las reglas duras de negocio en C#; si se rechaza, retorna a on_board con feedback explícito.
+- val_format_err <--> input_required: discrepancia de esquema entre el Fact Sheet y el backend de negocio.
+- ended <--> completed: acuerdo validado con éxito por ambas partes y firmado formalmente.
+- frozen <--> failed: estado terminal o pausa preventiva ante bucles de error o superación de reintentos para permitir mediación humana.
+
+4. FLUJOS OPERATIVOS DE SECUENCIA Y DIAGRAMAS
+NOTA TÉCNICA PARA AGENTES: La definición formal y el código fuente de los diagramas de secuencias (Handshake y Fase de Negociación) se encuentran almacenados en formato Mermaid dentro de la carpeta /mermaids del repositorio del proyecto. Cualquier agente debe consultar directamente esa ruta para inspeccionar la especificación técnica exacta de las trazas.
+
+- Resumen del Flujo de Handshake (ver /mermaids):
+  1. Tenant A emite petición al software intermediario para negociar con Agente B.
+  2. Software valida credenciales de Tenant A.
+  3. Comprobación de whitelist en Agente B.
+  4. Agente B remite catálogo de Agent Cards.
+  5. Agente A selecciona la skill y se validan credenciales cruzadas antes de abrir el canal.
+
+- Resumen del Ciclo de Negociación (ver /mermaids):
+  1. Agente envía petición (negotiation_id, sender_id, to_state, payload).
+  2. Orquestador lee Hot State en Redis (current_state, active_turn, last_sender).
+  3. Validación de turno: si no es su turno, rechaza con HTTP 400.
+  4. Evaluación de FSM interna: si la transición es ilegal, rechaza con HTTP 422 indicando estados válidos.
+  5. Persistencia atómica: actualización en Redis (nuevo estado, turn+1, last_sender) e inserción en base de datos histórica.
+  6. Notificación y enrutamiento del mensaje validado a la contraparte (Webhook, SSE o HTTP).

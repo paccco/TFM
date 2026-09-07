@@ -1,0 +1,71 @@
+\section{Gobernanza y FSM Determinista: Estados y Reglas de Transición}
+\label{sec:fsm}
+
+\subsection{Definición Formal de la FSM}
+La máquina de estados finitos que gobierna la negociación se define formalmente como una tupla:
+\begin{equation}
+    \mathcal{M} = (S, \Sigma, \delta, s_0, F)
+\end{equation}
+donde:
+\begin{itemize}
+    \item $S = \{\texttt{on\_board}, \texttt{board\_format\_err}, \texttt{validation}, \texttt{val\_format\_err}, \texttt{ended}, \texttt{frozen}\}$ representa el conjunto de estados internos admisibles.
+    \item $\Sigma$ representa el alfabeto de eventos y transiciones provocadas por mensajes entrantes o resultados de evaluación de reglas.
+    \item $\delta: S \times \Sigma \rightarrow S$ es la función de transición determinista ejecutada proceduralmente en C\#.
+    \item $s_0 = \texttt{on\_board}$ es el estado inicial tras completarse con éxito el handshake.
+    \item $F = \{\texttt{ended}, \texttt{frozen}\}$ es el conjunto de estados terminales.
+\end{itemize}
+
+\subsection{Mapeo Bidireccional de Estados}
+El estándar público A2A define estados genéricos para las tareas de agentes. El orquestador mantiene un mapeo bidireccional estricto entre estos estados y los estados del motor interno de C\#, tal como se sintetiza en el Cuadro~\ref{tab:fsm_mapping}.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{lllp{6.5cm}}
+\toprule
+\textbf{Estado A2A (Público)} & \textbf{Estado FSM (C\#)} & \textbf{Naturaleza} & \textbf{Significado y Comportamiento} \\
+\midrule
+\texttt{working} & \texttt{on\_board} & Transitorio & Fase activa de negociación, diálogo persuasivo e intercambio de contraofertas. \\
+\texttt{input\_required} & \texttt{board\_format\_err} & Recuperable & Payload inválido sintácticamente; activa el bucle de autocorrección cognitiva. \\
+\texttt{evaluating} & \texttt{validation} & Auditoría & Evaluación de la propuesta consolidada frente al Deterministic Guard. \\
+\texttt{input\_required} & \texttt{val\_format\_err} & Recuperable & Discrepancia de esquema de datos entre el Fact Sheet y el backend de negocio. \\
+\texttt{completed} & \texttt{ended} & Terminal & Acuerdo formalmente alcanzado, validado por ambas partes y firmado. \\
+\texttt{failed} & \texttt{frozen} & Terminal / Pausa & Negociación congelada tras superar el límite de reintentos ($N > 3$) o rechazo definitivo. \\
+\bottomrule
+\end{tabular}
+\caption{Mapeo Bidireccional entre el estándar A2A y la FSM interna del Orquestador.}
+\label{tab:fsm_mapping}
+\end{table}
+
+\subsection{Deterministic Guard y Reglas de Negocio}
+El componente \textit{Deterministic Guard} actúa como una compuerta infranqueable ante cualquier acuerdo propuesto por los agentes. Su evaluación es binaria y determinista, evaluando las siguientes restricciones operativas:
+\begin{enumerate}
+    \item \textbf{Margen Mínimo Comercial:} Comprueba que el precio ofertado $P_{\text{acuerdo}}$ respete el umbral mínimo de rentabilidad según el costo base $C_{\text{base}}$:
+    \begin{equation}
+        \frac{P_{\text{acuerdo}} - C_{\text{base}}}{P_{\text{acuerdo}}} \ge \mu_{\min}
+    \end{equation}
+    \item \textbf{Disponibilidad de Inventario:} Verifica contra el sistema de gestión (ERP) que la cantidad demandada $Q$ no exceda el stock físico comprometible $S_{\text{disp}}$.
+    \item \textbf{Límite de Riesgo de Crédito:} Evalúa la exposición crediticia del tenant solicitante frente a su póliza vigente.
+    \item \textbf{Factibilidad de Plazo:} Comprueba que la fecha límite de entrega $T_{\text{entrega}}$ sea compatible con el tiempo de transporte mínimo $T_{\text{lead}}$.
+\end{enumerate}
+
+Si cualquiera de las condiciones anteriores resulta insatisfecha, la transición hacia \texttt{ended} es abortada y la FSM retorna a \texttt{on\_board} adjuntando un diagnóstico cuantitativo para renegociación.
+
+\subsection{Bucle de Autocorrección Cognitiva (Self-Correction Loop)}
+Cuando un mensaje recibido adolece de errores de sintaxis, no respeta el esquema JSON esperado o intenta un salto de estado ilegal según la matriz $\delta$, el Gateway responde con un código de error HTTP 422 (\textit{Unprocessable Entity}).
+
+El agente cognoscitivo receptor debe implementar el bucle formal de autocorrección:
+\begin{enumerate}
+    \item Captura del objeto de diagnóstico retornado por el orquestador.
+    \item Inyección del mensaje de error en el contexto conversacional del LLM.
+    \item Regeneración estricta de la propuesta mediante Structured Outputs.
+    \item Limitación imperativa: el contador de reintentos acumulados $n$ está acotado por $n \le N_{\max}$ (con $N_{\max} = 3$). En caso de alcanzarse $n > N_{\max}$, el orquestador transiciona forzosamente la sesión al estado \texttt{frozen} (\texttt{failed}) y deriva la incidencia para mediación humana.
+\end{enumerate}
+
+\subsection{Evaluador Multicriterio MCDA para Negociaciones Concurrentes}
+En escenarios multilaterales (subastas con $N$ proveedores concurrentes), el Meta-Orquestador resuelve la selección del proveedor adjudicatario empleando un modelo MCDA (\textit{Multi-Criteria Decision Analysis}) basado en una función de utilidad aditiva ponderada:
+\begin{equation}
+    \text{Score}_k = w_p \cdot \widetilde{P}_k + w_t \cdot \widetilde{T}_k + w_d \cdot \widetilde{D}_k + w_r \cdot \widetilde{R}_k
+\end{equation}
+donde $\sum w_i = 1$, y los términos representan valores normalizados en el intervalo $[0, 1]$ correspondientes a Precio ($P$), Tiempo de entrega ($T$), Descuentos por volumen ($D$) y Reputación histórica del proveedor ($R$).
+El ganador recibe la notificación \texttt{complete\_task}, mientras que los proveedores no seleccionados reciben \texttt{cancel\_task}.

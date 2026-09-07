@@ -1,0 +1,33 @@
+\section{Protocolos de Comunicación: Gateway A2A y JSON-RPC 2.0}
+\label{sec:protocols}
+
+\subsection{Especificación del Estándar A2A (Agent-to-Agent)}
+El estándar A2A establece un marco formal e interoperable para la comunicación entre sistemas multiagente autónomos. Sobre la capa de transporte seguro (HTTPS / mTLS), el intercambio de mensajes se articula mediante el protocolo de invocación remota JSON-RPC 2.0.
+
+\subsection{Estructura de la Agent Card (/.well-known/agent.json)}
+El punto de anclaje semántico del sistema es su Agent Card, expuesta públicamente en la ruta estandarizada \texttt{/.well-known/agent.json}. Esta especificación describe las habilidades (\textit{skills}) ofrecidas por el orquestador, los esquemas de entrada y salida, así como los requerimientos criptográficos de autenticación para cada operación soportada.
+
+\subsection{Métodos JSON-RPC 2.0 Expuestos por el Gateway}
+El Gateway implementa cuatro primitivas principales de negociación:
+\begin{itemize}
+    \item \texttt{create\_task}: Inicializa una sesión de negociación multilateral o bilateral. Recibe el identificador del tenant, la habilidad solicitada y el payload inicial.
+    \item \texttt{send\_message}: Transmite un turno de negociación conteniendo el \texttt{facts\_delta} cuantitativo y el mensaje contextual hacia la contraparte.
+    \item \texttt{get\_task}: Consulta el estado actual de la tarea, el emisor del turno activo y el resumen factual consolidado en Redis.
+    \item \texttt{cancel\_task}: Provoca la cancelación inmediata de una negociación activa, transicionando a \texttt{frozen} (\texttt{failed}).
+\end{itemize}
+
+\subsection{Pipeline de Validación en Cascada en 4 Fases}
+A fin de asegurar la robustez del sistema frente a mensajes malformados o ataques perimetrales, el Gateway procesa cada petición a través de cuatro filtros secuenciales:
+\begin{enumerate}
+    \item \textbf{Fase 1: Validación de Transporte y Protocolo Base:} Comprueba método HTTP POST, cabeceras requeridas (\texttt{application/json}) y conformidad estructural JSON-RPC 2.0.
+    \item \textbf{Fase 2: Conformidad de Esquema A2A:} Valida que los parámetros correspondan a un \texttt{TaskRequest} o \texttt{MessagePart} conforme al metamodelo A2A.
+    \item \textbf{Fase 3: Validación Semántica de Agent Card:} Verifica que la habilidad solicitada exista en la Agent Card activa y satisfaga su esquema de entrada.
+    \item \textbf{Fase 4: Coherencia de Ciclo de Vida y Turnos:} Consulta atómicamente en Redis el estado de la tarea y la titularidad del turno activo para evitar operaciones desincronizadas.
+\end{enumerate}
+
+\subsection{Seguridad Perimetral y Control de Acceso}
+El Gateway aplica directivas perimetrales antes de procesar el payload:
+\begin{itemize}
+    \item \textbf{Autenticación mTLS:} Validación mutua de certificados X.509 para comprobar la identidad del tenant emisor.
+    \item \textbf{Rate Limiting y Cuotas:} Implementación de limitación de tasa por IP y por Tenant ID mediante algoritmo Token Bucket en Redis, previniendo denegación de servicio.
+\end{itemize}

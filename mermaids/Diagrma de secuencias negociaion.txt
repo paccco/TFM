@@ -1,0 +1,60 @@
+sequenceDiagram
+    autonumber
+    actor A as Agente A
+    actor B as Agente B
+
+
+    %% ----------------------------------------------------
+    %% BLOQUE 1: NEGOCIACIÓN (on_board, board_format_err, frozen)
+    %% ----------------------------------------------------
+    rect rgb(225, 240, 255)
+        note over A, B: Fase: Negociación (on_board / frozen / board_format_err)
+        A->>B: on_board (Propuesta inicial)
+
+
+        alt Respuesta OK
+            B-->>A: on_board (Acepta / Contraoferta)
+        else Error de Formato [board_format_err]
+            B-->>A: board_format_err (Error detectado en formato de negociación)
+            A->>A: Corregir payload / formato
+            A->>B: on_board (Reintento con formato corregido)
+            B-->>A: on_board (Aceptado)
+        else Congelación [frozen]
+            B-->>A: frozen (Oferta temporalmente pausada/congelada)
+            note over A, B: Esperar condición de desbloqueo
+            B->>A: on_board (Reanudar negociación tras desbloqueo)
+        end
+    end
+
+
+    %% ----------------------------------------------------
+    %% BLOQUE 2: VALIDACIÓN (validation, val_format_err)
+    %% ----------------------------------------------------
+    rect rgb(230, 245, 230)
+        note over A, B: Fase: Validación de Negocio (validation / val_format_err)
+        A->>B: validation (A le convence la oferta, solicita validación con negocio)
+
+
+        alt Validación OK
+            B-->>A: validation (B acepta la validación con negocio)
+        else Error de Formato en Validación [val_format_err]
+            B-->>A: val_format_err (Error en estructura del mensaje de validación)
+            A->>A: Corregir esquema de validación
+            A->>B: validation (Reintento de validación)
+            B-->>A: validation (Aceptado)
+        else Rechazo de Negocio (Retorno a Negociación)
+            B-->>A: on_board (Reglas de negocio no cumplidas, se renegocia)
+        end
+    end
+
+
+    %% ----------------------------------------------------
+    %% BLOQUE 3: FINALIZACIÓN (ended)
+    %% ----------------------------------------------------
+    rect rgb(240, 230, 250)
+        note over A, B: Fase: Finalización (ended)
+        A->>B: ended (A validó con negocio sin problemas)
+        opt Confirmación final
+            B-->>A: ended (B validó con negocio sin problemas)
+        end
+    end
