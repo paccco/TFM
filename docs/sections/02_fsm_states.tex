@@ -37,6 +37,22 @@ El estándar público A2A define estados genéricos para las tareas de agentes. 
 \label{tab:fsm_mapping}
 \end{table}
 
+\subsection{Ciclo de Negociación y Dinámica de Transiciones}
+La interacción dinámica entre los agentes negociadores se rige por una secuencia estricta de fases operativas y salvaguardas procedurales, tal como se ilustra en la Figura~\ref{fig:negotiation_cycle}. El ciclo se estructura en tres bloques fundamentales:
+
+\begin{enumerate}
+    \item \textbf{Bloque 1: Negociación Activa (\texttt{on\_board}, \texttt{board\_format\_err}, \texttt{frozen}):} Constituye el diálogo comercial recurrente. El agente proponente transmite una oferta inicial en estado \texttt{on\_board}. La contraparte puede responder aceptando o emitiendo una contraoferta en el mismo estado. Si se detecta un error de sintaxis o de esquema en el payload, el orquestador retorna \texttt{board\_format\_err}, obligando al agente a subsanar el payload e intentar de nuevo. Si concurren condiciones de espera externa o bloqueo transitorio, la negociación se suspende temporalmente en \texttt{frozen} hasta su reanudación controlada.
+    \item \textbf{Bloque 2: Validación de Negocio (\texttt{validation}, \texttt{val\_format\_err}):} Al converger hacia un acuerdo preliminar satisfactorio, se emite una solicitud en estado \texttt{validation} para someter el \textit{Fact Sheet} al \textit{Deterministic Guard}. Si la estructura del mensaje de validación es errónea, se activa el estado \texttt{val\_format\_err} para corrección. Si las reglas duras de negocio (márgenes comerciales, disponibilidad de inventario o límites de crédito) son infringidas, el orquestador rechaza el cierre y retrotrae la negociación al estado \texttt{on\_board} para su reformulación.
+    \item \textbf{Bloque 3: Finalización Contractual (\texttt{ended}):} Una vez que ambas partes han validado satisfactoriamente los términos cuantitativos y legales frente a sus respectivos backends, la FSM transiciona de forma irreversible al estado terminal \texttt{ended}, procediendo a la firma del acuerdo y al archivado de la bitácora en la persistencia \textit{Dual-Track}.
+\end{enumerate}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.75\textwidth,height=0.78\textheight,keepaspectratio]{negotiation_cycle.png}
+    \caption{Ciclo de negociación gobernado por la FSM determinista: alternancia de turnos y diálogo en \texttt{on\_board}, bucle de autocorrección sintáctica (\texttt{board\_format\_err}), suspensión temporal (\texttt{frozen}), compuerta de validación contra reglas de negocio (\texttt{validation}, \texttt{val\_format\_err}) y formalización final (\texttt{ended}).}
+    \label{fig:negotiation_cycle}
+\end{figure}
+
 \subsection{Deterministic Guard y Reglas de Negocio}
 El componente \textit{Deterministic Guard} actúa como una compuerta infranqueable ante cualquier acuerdo propuesto por los agentes. Su evaluación es binaria y determinista, evaluando las siguientes restricciones operativas:
 \begin{enumerate}
