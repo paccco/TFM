@@ -1,28 +1,28 @@
 CONTEXTO DEL PROYECTO: ORQUESTADOR STATELESS DE NEGOCIACIÓN A2A
 
 1. RESUMEN EJECUTIVO
-El proyecto consiste en el desarrollo de un orquestador stateless, desacoplado y de baja latencia para gobernar negociaciones comerciales entre agentes de inteligencia artificial utilizando el estándar público A2A (Agent-to-Agent). Su objetivo primordial es garantizar el determinismo del flujo mediante una Máquina de Estados Finitos (FSM) ejecutada proceduralmente en código, impidiendo que alucinaciones, respuestas probabilísticas o saltos de estado inválidos por parte de los LLMs corrompan las reglas de negocio y los acuerdos contractuales.
+El proyecto consiste en el desarrollo de un orquestador stateless, desacoplado y de baja latencia para gobernar negociaciones comerciales entre agentes de inteligencia artificial utilizando el estándar público A2A (Agent-to-Agent). Su objetivo primordial es garantizar el determinismo del flujo mediante una Máquina de Estados Finitos (FSM) ejecutada proceduralmente en código C# (.NET 9), impidiendo que alucinaciones, respuestas probabilísticas o saltos de estado inválidos por parte de los LLMs corrompan las reglas de negocio y los acuerdos contractuales.
 
 2. ARQUITECTURA DEL SISTEMA POR CAPAS
 
-Capa 1: Clientes A2A (Entorno Externo)
-- Representa a los agentes autónomos externos (compradores o proveedores).
-- Descubren dinámicamente las capacidades del sistema leyendo la Agent Card pública.
-- Gestionan el ciclo de vida de la negociación emitiendo peticiones estándar A2A (create_task, send_message, get_task) bajo el protocolo JSON-RPC 2.0.
+Capa 1: Clientes A2A (Entorno Externo y Agentes Sintéticos)
+- Representa a los agentes autónomos (compradores o proveedores) y arneses de simulación.
+- Descubren dinámicamente las capacidades del sistema leyendo la Agent Card pública en /.well-known/agent.json.
+- Gestionan el ciclo de vida de la negociación emitiendo peticiones estándar A2A (create_task, send_message, get_task, cancel_task) bajo el protocolo JSON-RPC 2.0 en /rpc o /a2a.
 
-Capa 2: Gateway A2A (ASP.NET Core / C#)
-- Actúa como frontera perimetral de seguridad y adaptador de protocolos.
-- Expone el catálogo de capacidades y esquemas en /.well-known/agent.json.
-- Aplica seguridad perimetral mediante autenticación/autorización, mTLS, control de cuotas y rate limiting.
-- Despacho desacoplado (Skill Dispatcher): enruta las peticiones según la habilidad solicitada sin exponer identificadores internos.
-- Pipeline de validación en cascada en 4 fases antes de transferir la carga al orquestador:
-  1. Validación estructural y de transporte (cabeceras, JSON-RPC 2.0).
-  2. Conformidad de esquema A2A (TaskRequest, Message Parts, DataPart schema).
-  3. Validación semántica contra la Agent Card (existencia de skill e inputs conformes).
-  4. Coherencia de ciclo de vida (acción legal para el estado actual de la tarea).
-- Traducción de protocolos: convierte payloads A2A en DTOs fuertemente tipados de C#.
+Capa 2: Gateway A2A (ASP.NET Core Kestrel / .NET 9) [IMPLEMENTADO]
+- Actúa como frontera perimetral de seguridad y adaptador de protocolos JSON-RPC 2.0.
+- Expone el catálogo de capacidades y esquemas en /.well-known/agent.json con serialización precompilada zero-allocation en UTF-8 (ReadOnlyMemory<byte>).
+- Aplica seguridad perimetral mediante autenticación de identidades (cabecera X-Agent-ID, certificados de cliente mTLS X.509) y rate limiting particionado por AgentId con ventana deslizante (Sliding Window).
+- Despacho desacoplado (INegotiationDispatcher / A2ACommandEnvelope): transfiere la carga validada hacia el orquestador sin acoplamiento perimetral.
+- Pipeline de validación en cascada en 4 fases bajo principio fail-fast:
+  1. Fase 1: Transporte y formato JSON-RPC 2.0 (jsonrpc="2.0", method no vacío, id presente). Errores: -32700 (Parse error), -32600 (Invalid Request).
+  2. Fase 2: Conformidad de esquema de parámetros ('params' objeto, campos requeridos y tipado de skill). Error: -32602 (Invalid params).
+  3. Fase 3: Validación semántica contra la Agent Card (complejidad O(1) con FrozenDictionary). Error: -32601 (Method not found).
+  4. Fase 4: Coherencia estructural de ciclo de vida y turno perimetral (Gateway Passthrough: validación de turn_index >= 0, presencia de negotiation_id y correlación de identidad X-Agent-ID vs sender_id). Error: -32602 (Invalid params).
+- Mapeo canónico de excepciones de dominio del orquestador: captura TurnConflictException / TurnOutOfOrderException y retorna el código de servidor reservado -32001 (Turn Conflict / Out of Order).
 
-Capa 3: Capa de Gobernanza y Orquestación FSM (C# / .NET)
+Capa 3: Capa de Gobernanza y Orquestación FSM (C# / .NET) [EN DESARROLLO]
 - Empaquetada como módulo/librería interna dentro del mismo Pod del orquestador en Kubernetes para evitar saltos de red y latencias de serialización.
 - Arquitectura 100% stateless: no retiene memoria de sesión en proceso; la única fuente de verdad se rehidrata desde el almacenamiento externo.
 - FSM Unitaria (Stateless en C#): gobierna transiciones legales y turnos de interacción de forma determinista.
@@ -33,7 +33,7 @@ Capa 3: Capa de Gobernanza y Orquestación FSM (C# / .NET)
 Capa 4: Capa Cognitiva (LLM SDK)
 - Responsable exclusiva de la persuasión, generación de lenguaje natural y razonamiento táctico.
 - Obligada a responder mediante Structured Outputs (JSON Schema) emitiendo el delta fáctico (facts_delta) de la propuesta.
-- Bucle de autocorrección (Self-Correction Loop): si el orquestador detecta un error de formato o transición inválida (HTTP 422), el agente reinyecta el error en su prompt con un límite estricto de reintentos (N = 2 o 3) antes de derivar a mediación o congelar la sesión.
+- Bucle de autocorrección (Self-Correction Loop): si el orquestador detecta un error de formato o transición inválida (HTTP 422 / JSON-RPC -32602), el agente reinyecta el error en su prompt con un límite estricto de reintentos (N = 2 o 3) antes de derivar a mediación o congelar la sesión.
 
 Capa 5: Persistencia Dual-Track State Store
 - Track 1 (Raw Transcript / BD Relacional SQL): registro inmutable, cronológico y append-only de cada turno (emisor, mensaje literal, timestamp) para auditoría legal y análisis forense.
@@ -48,7 +48,10 @@ Capa 5: Persistencia Dual-Track State Store
 - frozen <--> failed: estado terminal o pausa preventiva ante bucles de error o superación de reintentos para permitir mediación humana.
 
 4. FLUJOS OPERATIVOS DE SECUENCIA Y DIAGRAMAS
-NOTA TÉCNICA PARA AGENTES: La definición formal y el código fuente de los diagramas de secuencias (Handshake y Fase de Negociación) se encuentran almacenados en formato Mermaid dentro de la carpeta /mermaids del repositorio del proyecto. Cualquier agente debe consultar directamente esa ruta para inspeccionar la especificación técnica exacta de las trazas.
+NOTA TÉCNICA PARA AGENTES: La definición formal y el código fuente de los diagramas de secuencias se encuentran almacenados en formato Mermaid dentro de la carpeta /mermaids del repositorio:
+  - mermaids/Diagrama de secuencias handshake.txt
+  - mermaids/Diagrma de secuencias negociaion.txt
+  - mermaids/Diagrama de secuencias paso de mensajes.txt
 
 - Resumen del Flujo de Handshake (ver /mermaids):
   1. Tenant A emite petición al software intermediario para negociar con Agente B.
@@ -58,9 +61,20 @@ NOTA TÉCNICA PARA AGENTES: La definición formal y el código fuente de los dia
   5. Agente A selecciona la skill y se validan credenciales cruzadas antes de abrir el canal.
 
 - Resumen del Ciclo de Negociación (ver /mermaids):
-  1. Agente envía petición (negotiation_id, sender_id, to_state, payload).
-  2. Orquestador lee Hot State en Redis (current_state, active_turn, last_sender).
-  3. Validación de turno: si no es su turno, rechaza con HTTP 400.
-  4. Evaluación de FSM interna: si la transición es ilegal, rechaza con HTTP 422 indicando estados válidos.
-  5. Persistencia atómica: actualización en Redis (nuevo estado, turn+1, last_sender) e inserción en base de datos histórica.
-  6. Notificación y enrutamiento del mensaje validado a la contraparte (Webhook, SSE o HTTP).
+  1. Agente envía petición POST /rpc o POST /a2a (negotiation_id, sender_id, turn_index, message).
+  2. Gateway ejecuta pipeline de 4 fases y despacha sobre de comando (A2ACommandEnvelope).
+  3. Orquestador lee Hot State en Redis (current_state, active_turn, last_sender).
+  4. Validación de turno: si no es su turno o turn_index <= last_turn, propaga TurnOutOfOrderException (error JSON-RPC -32001).
+  5. Evaluación de FSM interna y Deterministic Guard: si la transición es ilegal, rechaza con código de error formal.
+  6. Persistencia atómica: actualización en Redis e inserción en base de datos histórica (Dual-Track).
+  7. Confirmación acknowledged devuelta por el Gateway al emisor.
+
+5. ESTRUCTURA DEL REPOSITORIO Y COMPONENTES ACTUALES
+
+- src/A2A.Core/: Abstracciones, DTOs inmutables, constantes JSON-RPC 2.0, serialización Source Generator (A2AJsonSerializerContext).
+- src/A2A.Gateway/: Servidor ASP.NET Core Kestrel, pipeline de validación 4 fases, filtros modulares, endpoints (/rpc, /a2a, /.well-known/agent.json), rate limiting y middleware de identidad.
+- tests/integration/A2A.IntegrationTests/: Tests de integración en C# (.NET 9 / WebApplicationFactory) para endpoints de metadatos, rate limiting y pipeline de validación.
+- tests/e2e_agents/: Arnés E2E en Python con agentes deterministas BuyerAgent y SellerAgent, runner de simulación (run_simulation.py), suite pytest (test_simulation.py) y esquemas Pydantic.
+- .github/workflows/a2a-gateway-ci.yml: Workflow de CI en GitHub Actions para ramas main y develop (.NET 9 build, C# tests, Python 3.11 setup, Kestrel background execution con healthcheck polling y ejecución de suite E2E).
+- docs/: Documentación formal como código en LaTeX (sections/01_architecture.tex, 02_fsm_states.tex, 03_protocols.tex) compilable mediante 'make -C docs' a main.pdf.
+- scripts/op_cli.py: CLI de sincronización y trazabilidad con OpenProject v3 API.
