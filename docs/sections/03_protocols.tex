@@ -2,10 +2,23 @@
 \label{sec:protocols}
 
 \subsection{Especificación del Estándar A2A (Agent-to-Agent)}
-El estándar A2A establece un marco formal e interoperable para la comunicación entre sistemas multiagente autónomos. Sobre la capa de transporte seguro (HTTPS / mTLS), el intercambio de mensajes se articula mediante el protocolo de invocación remota JSON-RPC 2.0.
+El estándar A2A establece un marco formal e interoperable para la comunicación entre sistemas multiagente autónomos. Sobre la capa de transporte seguro (HTTPS / mTLS con soporte HTTP/1.1 y HTTP/2), el intercambio de mensajes se articula mediante el protocolo de invocación remota JSON-RPC 2.0. Esta decisión arquitectónica desacopla el transporte de la semántica transaccional, asegurando que cada orden emitida contenga identificadores deterministas (\texttt{id}) y un cuerpo fuertemente tipado.
 
-\subsection{Estructura de la Agent Card (/.well-known/agent.json)}
-El punto de anclaje semántico del sistema es su Agent Card, expuesta públicamente en la ruta estandarizada \texttt{/.well-known/agent.json}. Esta especificación describe las habilidades (\textit{skills}) ofrecidas por el orquestador, los esquemas de entrada y salida, así como los requerimientos criptográficos de autenticación para cada operación soportada.
+\subsection{Publicación de Metadatos: Endpoint /.well-known/agent.json}
+El anclaje semántico y punto de entrada para el descubrimiento dinámico por parte de agentes externos es el endpoint estandarizado:
+\begin{center}
+    \texttt{GET /.well-known/agent.json}
+\end{center}
+
+Este endpoint expone públicamente la \textbf{Agent Card} del sistema. Para maximizar el rendimiento perimetral y alcanzar un patrón de cero asignaciones de memoria (\textit{zero-allocation}), el Gateway procesa y serializa la Agent Card durante la fase de inicialización (\textit{bootstrap}) del host Kestrel, almacenando el payload resultante en un búfer inmutable UTF-8 (\texttt{ReadOnlyMemory<byte>}). Cada petición entrante a esta ruta es despachada directamente desde memoria con encabezados de control de caché (\texttt{Cache-Control: public, max-age=300}) y tipo de contenido \texttt{application/json; charset=utf-8}, eliminando cualquier latencia de serialización en tiempo de ejecución.
+
+La Agent Card comprende las siguientes secciones normativas:
+\begin{itemize}
+    \item \textbf{Identidad y Metadatos:} Identificador URI único (\texttt{id}), nombre descriptivo, versión semántica y versión de especificación del protocolo A2A.
+    \item \textbf{Capacidades Declaradas (\textit{Capabilities}):} Listado de extensiones funcionales, tales como orquestación stateless, soporte estricto de JSON-RPC 2.0 y control de cuotas mediante ventanas deslizantes.
+    \item \textbf{Catálogo de Habilidades (\textit{Skills}):} Definición formal de cada método habilitado (\texttt{create\_task}, \texttt{send\_message}, \texttt{get\_task}, \texttt{cancel\_task}) acompañado de su esquema JSON (\textit{JSON Schema}) de parámetros de entrada (\texttt{inputSchema}) y salida (\texttt{outputSchema}).
+    \item \textbf{Seguridad Perimetral:} Esquemas de autenticación reconocidos (\texttt{X-Agent-ID}, certificados mTLS X.509) y límites de tasa nominales.
+\end{itemize}
 
 \subsection{Protocolo de Handshake y Negociación de Agent Cards}
 Antes de dar inicio formal a una negociación comercial, los agentes y sus respectivas entidades (\textit{tenants}) deben establecer un canal seguro de confianza mutua mediante el protocolo de \textit{handshake} (apretón de manos). Este procedimiento garantiza que únicamente contrapartes autorizadas y verificadas puedan acceder al catálogo de servicios y comenzar el intercambio de propuestas.
@@ -25,27 +38,57 @@ Tal como se detalla en la Figura~\ref{fig:handshake_flow}, el flujo opera a trav
     \label{fig:handshake_flow}
 \end{figure}
 
-\subsection{Métodos JSON-RPC 2.0 Expuestos por el Gateway}
-El Gateway implementa cuatro primitivas principales de negociación:
-\begin{itemize}
-    \item \texttt{create\_task}: Inicializa una sesión de negociación multilateral o bilateral. Recibe el identificador del tenant, la habilidad solicitada y el payload inicial.
-    \item \texttt{send\_message}: Transmite un turno de negociación conteniendo el \texttt{facts\_delta} cuantitativo y el mensaje contextual hacia la contraparte.
-    \item \texttt{get\_task}: Consulta el estado actual de la tarea, el emisor del turno activo y el resumen factual consolidado en Redis.
-    \item \texttt{cancel\_task}: Provoca la cancelación inmediata de una negociación activa, transicionando a \texttt{frozen} (\texttt{failed}).
-\end{itemize}
-
 \subsection{Pipeline de Validación en Cascada en 4 Fases}
-A fin de asegurar la robustez del sistema frente a mensajes malformados o ataques perimetrales, el Gateway procesa cada petición a través de cuatro filtros secuenciales:
+Para garantizar la integridad del sistema frente a cargas malformadas, intentos de inyección o inconsistencias de secuencia, el Gateway A2A canaliza cada petición recibida en los endpoints \texttt{POST /rpc} o \texttt{POST /a2a} a través de un pipeline modular en cascada organizado en cuatro fases secuenciales bajo el principio de fallo rápido (\textit{fail-fast}):
+
 \begin{enumerate}
-    \item \textbf{Fase 1: Validación de Transporte y Protocolo Base:} Comprueba método HTTP POST, cabeceras requeridas (\texttt{application/json}) y conformidad estructural JSON-RPC 2.0.
-    \item \textbf{Fase 2: Conformidad de Esquema A2A:} Valida que los parámetros correspondan a un \texttt{TaskRequest} o \texttt{MessagePart} conforme al metamodelo A2A.
-    \item \textbf{Fase 3: Validación Semántica de Agent Card:} Verifica que la habilidad solicitada exista en la Agent Card activa y satisfaga su esquema de entrada.
-    \item \textbf{Fase 4: Coherencia de Ciclo de Vida y Turnos:} Consulta atómicamente en Redis el estado de la tarea y la titularidad del turno activo para evitar operaciones desincronizadas.
+    \item \textbf{Fase 1: Validación de Transporte y Formato JSON-RPC 2.0:}
+    Examina que el cuerpo HTTP contenga un documento JSON sintácticamente correcto. Si el analizador léxico falla, se genera de inmediato una respuesta con código de error \texttt{-32700} (\textit{Parse error}). A continuación, verifica que el elemento raíz sea un objeto JSON y contenga los campos obligatorios: \texttt{"jsonrpc": "2.0"}, \texttt{"method"} (cadena de caracteres no vacía) y \texttt{"id"} (identificador numérico o alfanumérico). Si alguno de estos campos falta o es inválido, se emite el error \texttt{-32600} (\textit{Invalid Request}).
+
+    \item \textbf{Fase 2: Validación de Conformidad de Esquema de Parámetros:}
+    Evalúa que la propiedad \texttt{"params"} exista y corresponda a un objeto estructurado. Si el método solicitado coincide con una habilidad registrada en la Agent Card, se valida la presencia y tipado de sus argumentos mandatorios (por ejemplo, \texttt{tenant\_id} y \texttt{skill} en \texttt{create\_task}, o \texttt{negotiation\_id}, \texttt{turn\_index} y \texttt{sender\_id} en \texttt{send\_message}). Si los parámetros no son conformes, se interrumpe la ejecución con el error \texttt{-32602} (\textit{Invalid params}). Si el método no es reconocido en esta fase, la petición avanza hacia la Fase 3 sin rechazarla prematuramente por parámetros.
+
+    \item \textbf{Fase 3: Validación Semántica contra la Agent Card:}
+    Verifica mediante búsqueda de complejidad $O(1)$ en el catálogo inmutable (\texttt{FrozenDictionary}) que el método solicitado figure entre las habilidades (\textit{Skills}) habilitadas en la Agent Card activa. En caso de invocar una habilidad inexistente o no autorizada, se rechaza la llamada emitiendo el código formal \texttt{-32601} (\textit{Method not found}).
+
+    \item \textbf{Fase 4: Coherencia Estructural de Turno y Correlación (Gateway Passthrough):}
+    Bajo el patrón arquitectónico \textit{Gateway Passthrough}, el Gateway no consulta el almacén de estado en Redis ni computa las transiciones de la Máquina de Estados Finitos (FSM), dado que dicha lógica de negocio corresponde exclusivamente al núcleo del Orquestador. En esta fase, el componente \texttt{ITurnGuardService} se limita a verificar la presencia y validez estructural de \texttt{negotiation\_id}, comprobar que \texttt{turn\_index} sea un entero no negativo ($\ge 0$) y asegurar la correlación de identidad perimetral verificando que el \texttt{sender\_id} declarado coincida estrictamente con la entidad autenticada en \texttt{AgentIdentityContext}.
 \end{enumerate}
+
+\subsection{Despacho Desacoplado y Mapeo de Excepciones de Dominio}
+Superadas las cuatro fases del pipeline, el Gateway empaqueta la carga útil en un sobre de transporte desacoplado:
+\begin{center}
+    \texttt{A2ACommandEnvelope(NegotiationId, Method, Payload, Emisor, TurnIndex)}
+\end{center}
+Este sobre se transfiere mediante inyección de dependencias a la interfaz \texttt{INegotiationDispatcher}. Si durante el procesamiento en el dominio de orquestación la FSM detecta que el turno no corresponde al emisor, que el índice de turno es extemporáneo o duplicado, o que existe una colisión de concurrencia, el orquestador propaga una excepción de dominio \texttt{TurnConflictException} (o \texttt{TurnOutOfOrderException}).
+
+El Gateway intercepta dicha excepción en el perímetro perimetral y la transforma de forma canónica en una respuesta formal JSON-RPC 2.0 con el código de servidor reservado \texttt{-32001} (\textit{Turn Conflict / Out of Order}), retornando los metadatos de diagnóstico correspondientes.
+
+\subsection{Tabla Formal de Mapeo de Errores JSON-RPC 2.0 y A2A}
+En la Tabla~\ref{tab:jsonrpc_error_mapping} se detalla la correspondencia formal entre los códigos de error JSON-RPC 2.0, las fases del pipeline perimetral y las condiciones de fallo asociadas.
+
+\begin{table}[htbp]
+    \centering
+    \small
+    \renewcommand{\arraystretch}{1.3}
+    \begin{tabular}{@{}llcp{7.5cm}@{}}
+        \toprule
+        \textbf{Código} & \textbf{Mensaje Canónico} & \textbf{Fase} & \textbf{Condición de Activación en el Gateway} \\
+        \midrule
+        \texttt{-32700} & \textit{Parse error} & Fase 1 & Payload HTTP corrupto o JSON sintácticamente inválido recibido por el servidor Kestrel. \\
+        \texttt{-32600} & \textit{Invalid Request} & Fase 1 & Carga no conforme al protocolo: omisión de \texttt{"jsonrpc": "2.0"}, ausencia de \texttt{"method"} o falta de identificador \texttt{"id"}. \\
+        \texttt{-32601} & \textit{Method not found} & Fase 3 & La habilidad solicitada no existe o no está habilitada en el catálogo de Skills de la Agent Card. \\
+        \texttt{-32602} & \textit{Invalid params} & Fase 2 / 4 & Argumentos no conformes: \texttt{"params"} no es un objeto JSON, faltan propiedades requeridas o hay discrepancia en \texttt{sender\_id}. \\
+        \texttt{-32001} & \textit{Turn Conflict / Out of Order} & FSM / Dominio & Conflicto transaccional de turno: turno duplicado, desincronización de secuencia monótona o violación de turno activo en la FSM. \\
+        \bottomrule
+    \end{tabular}
+    \caption{Tabla de correspondencia y mapeo formal de códigos de error JSON-RPC 2.0 y extensiones de dominio A2A implementadas en el Gateway.}
+    \label{tab:jsonrpc_error_mapping}
+\end{table}
 
 \subsection{Seguridad Perimetral y Control de Acceso}
 El Gateway aplica directivas perimetrales antes de procesar el payload:
 \begin{itemize}
-    \item \textbf{Autenticación mTLS:} Validación mutua de certificados X.509 para comprobar la identidad del tenant emisor.
-    \item \textbf{Rate Limiting y Cuotas:} Implementación de limitación de tasa por IP y por Tenant ID mediante algoritmo Token Bucket en Redis, previniendo denegación de servicio.
+    \item \textbf{Extracción de Identidad (\texttt{AgentIdentityContext}):} Inspecciona la cabecera estándar \texttt{X-Agent-ID} y el atributo Common Name (CN) del certificado de cliente en enlaces mTLS X.509, estableciendo un contexto de identidad inyectable por petición (\textit{scoped}).
+    \item \textbf{Rate Limiting Particionado:} Utiliza el middleware nativo \texttt{Microsoft.AspNetCore.RateLimiting} configurado bajo un algoritmo de ventana deslizante (\textit{Sliding Window}). Las particiones se aíslan de manera estricta por el identificador de cliente (\texttt{AgentId}), garantizando que ráfagas excesivas de peticiones de un agente deriven en respuestas inmediatas \texttt{429 Too Many Requests} sin afectar la cuota de agentes competidores.
 \end{itemize}
