@@ -1,0 +1,98 @@
+name: A2A Gateway CI
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main", "develop" ]
+
+jobs:
+  build-and-test:
+    name: Build & E2E Verification
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore and Build Solution (Release)
+        run: |
+          dotnet restore A2A.sln
+          dotnet build A2A.sln -c Release --no-restore
+
+      - name: Run .NET Integration Tests
+        run: |
+          dotnet test tests/integration/A2A.IntegrationTests/A2A.IntegrationTests.csproj -c Release --no-build --verbosity normal
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python E2E Test Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/e2e_agents/requirements.txt
+
+      - name: Launch A2A Gateway in Background
+        run: |
+          echo "Starting A2A Gateway on http://127.0.0.1:5000..."
+          dotnet run --project src/A2A.Gateway/A2A.Gateway.csproj -c Release --no-build --urls "http://127.0.0.1:5000" > gateway.log 2>&1 &
+          echo $! > gateway.pid
+          echo "Gateway launched with PID: $(cat gateway.pid)"
+
+      - name: Gateway Healthcheck Polling
+        run: |
+          echo "Awaiting Gateway readiness on http://127.0.0.1:5000/.well-known/agent.json..."
+          MAX_RETRIES=30
+          COUNT=0
+          until curl -s -f http://127.0.0.1:5000/.well-known/agent.json > /dev/null; do
+            COUNT=$((COUNT + 1))
+            if [ $COUNT -ge $MAX_RETRIES ]; then
+              echo "FATAL: Gateway did not become healthy within 30 seconds."
+              cat gateway.log
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "Gateway is ready! Healthcheck responded with HTTP 200 after ${COUNT}s."
+
+      - name: Execute E2E Simulation Agents Runner
+        env:
+          GATEWAY_URL: "http://127.0.0.1:5000"
+        run: |
+          python tests/e2e_agents/run_simulation.py
+
+      - name: Execute Pytest E2E Suite
+        env:
+          GATEWAY_URL: "http://127.0.0.1:5000"
+        run: |
+          pytest -v tests/e2e_agents/
+
+      - name: Dump Gateway Logs on Failure
+        if: failure()
+        run: |
+          echo "=== A2A Gateway Log Output ==="
+          if [ -f gateway.log ]; then
+            cat gateway.log
+          else
+            echo "No gateway.log found."
+          fi
+
+      - name: Clean Gateway Process Shutdown
+        if: always()
+        run: |
+          if [ -f gateway.pid ]; then
+            PID=$(cat gateway.pid)
+            echo "Terminating Gateway process PID ${PID}..."
+            kill ${PID} 2>/dev/null || true
+            sleep 1
+            kill -9 ${PID} 2>/dev/null || true
+            rm -f gateway.pid
+          fi
