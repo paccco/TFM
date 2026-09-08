@@ -92,3 +92,42 @@ El Gateway aplica directivas perimetrales antes de procesar el payload:
     \item \textbf{Extracción de Identidad (\texttt{AgentIdentityContext}):} Inspecciona la cabecera estándar \texttt{X-Agent-ID} y el atributo Common Name (CN) del certificado de cliente en enlaces mTLS X.509, estableciendo un contexto de identidad inyectable por petición (\textit{scoped}).
     \item \textbf{Rate Limiting Particionado:} Utiliza el middleware nativo \texttt{Microsoft.AspNetCore.RateLimiting} configurado bajo un algoritmo de ventana deslizante (\textit{Sliding Window}). Las particiones se aíslan de manera estricta por el identificador de cliente (\texttt{AgentId}), garantizando que ráfagas excesivas de peticiones de un agente deriven en respuestas inmediatas \texttt{429 Too Many Requests} sin afectar la cuota de agentes competidores.
 \end{itemize}
+
+\subsection{Arnés de Pruebas de Integración E2E y Verificación Continua (CI)}
+\label{sec:e2e_testing_ci}
+Para garantizar la estabilidad operativa del Gateway A2A y validar empíricamente el cumplimiento del estándar JSON-RPC 2.0 frente a cargas de trabajo realistas, se ha diseñado un arnés de pruebas de integración \textit{End-to-End} (E2E) basado en agentes simulados deterministas y un flujo automatizado de Integración Continua en GitHub Actions.
+
+\subsubsection{Arquitectura de Agentes Simulados Deterministas}
+A diferencia de los enfoques basados en modelos de lenguaje extensos (LLM), cuyos tiempos de respuesta no deterministas y costes de inferencia introducen variabilidad y fragilidad en los entornos de prueba, el arnés implementa dos agentes sintéticos gobernados por máquinas de estados finitos y reglas deterministas de fijación de precios en el espacio de parámetros comerciales:
+\begin{itemize}
+    \item \textbf{Agente Comprador (\texttt{BuyerAgent}):} Identificado como \texttt{urn:agent:buyer}. Inicia la interacción con una oferta inicial reducida ($p_0 = 75{,}00$\,EUR), un techo de reserva infranqueable ($p_{\text{max}} = 95{,}00$\,EUR) y un incremento incremental fijo por turno ($\Delta p = +5{,}00$\,EUR). Emite la cabecera perimetral obligatoria \texttt{X-Agent-ID: urn:agent:buyer}. Acepta la propuesta (\texttt{action: ACCEPT}) si el precio ofertado por la contraparte satisface $p_{\text{recibido}} \le p_{\text{max}}$.
+    \item \textbf{Agente Vendedor (\texttt{SellerAgent}):} Identificado como \texttt{urn:agent:seller}. Parte de una postura inicial elevada ($p_0 = 105{,}00$\,EUR), un suelo de reserva mínimo admisible ($p_{\text{min}} = 85{,}00$\,EUR) y un decremento fijo por turno ($\Delta p = -5{,}00$\,EUR). Emite la cabecera perimetral \texttt{X-Agent-ID: urn:agent:seller}. Acepta la propuesta si $p_{\text{recibido}} \ge p_{\text{min}}$.
+\end{itemize}
+
+Dado el solapamiento en el intervalo de reserva $[85{,}00,\, 95{,}00]$\,EUR, el sistema garantiza matemáticamente una convergencia finita en $N \le 5$ turnos, produciendo un acuerdo vinculante con precio final de $95{,}00$\,EUR sin derivar en bucles infinitos.
+
+\subsubsection{Casos de Prueba Automatizados}
+El ejecutor de pruebas (\texttt{run\_simulation.py} y suite \texttt{test\_simulation.py} en \texttt{pytest}) evalúa dos suites principales contra el Gateway:
+\begin{enumerate}
+    \item \textbf{Caso de Prueba 1: Negociación Determinista Concurrente (\textit{Happy Path}):}
+    Simula el intercambio alternado de turnos monótonos crecientes (\texttt{turn\_index}: $0, 1, 2, 3, 4$). Cada mensaje es validado por las cuatro fases del pipeline y despachado hacia el orquestador desacoplado, asegurando que cada respuesta HTTP 200 contenga la estructura canónica JSON-RPC con \texttt{"status": "acknowledged"}, preservación estricta del \texttt{negotiation\_id} y concordancia de \texttt{turn\_index}.
+    \item \textbf{Caso de Prueba 2: Detección y Confinamiento de Anomalías Perimetrales (Código \texttt{-32602}):}
+    Inyecta intencionadamente anomalías estructurales para verificar que el Gateway aplique el principio de fallo rápido (\textit{fail-fast}) sin provocar excepciones no controladas ni respuestas de error interno del servidor (HTTP 500):
+    \begin{itemize}
+        \item \textit{Índice de turno negativo:} Se remite un payload con \texttt{turn\_index: -1}, provocando el rechazo inmediato en Fase 2/4 con código JSON-RPC \texttt{-32602} (\textit{Invalid params}).
+        \item \textit{Omisión de propiedades mandatorias:} Se transmite una solicitud donde se suprime la clave requerida \texttt{message}, interceptada en Fase 2 con código \texttt{-32602}.
+        \item \textit{Discrepancia de identidad perimetral:} Se configura la cabecera HTTP \texttt{X-Agent-ID: urn:agent:buyer} mientras que el cuerpo declara \texttt{sender\_id: urn:agent:seller}. El componente \texttt{TurnGuardFilter} (Fase 4) detecta la suplantación y rechaza la orden con código \texttt{-32602} y mensaje explicativo (\textit{Identity mismatch}).
+    \end{itemize}
+\end{enumerate}
+
+\subsubsection{Pipeline de Integración Continua en GitHub Actions}
+La automatización del ciclo de vida se formaliza en el workflow \texttt{.github/workflows/a2a-gateway-ci.yml}, activado en cada \textit{push} y \textit{pull request} sobre las ramas \texttt{main} y \texttt{develop}. El flujo ejecuta la siguiente secuencia determinista:
+\begin{enumerate}
+    \item \textbf{Compilación y Pruebas Unitarias .NET:} Restaura dependencias y compila la solución en configuración \texttt{Release} sobre el SDK de .NET 9.0, ejecutando las pruebas de integración en C\#.
+    \item \textbf{Preparación del Entorno Python:} Configura Python 3.11 e instala las librerías de prueba (\texttt{httpx}, \texttt{pydantic}, \texttt{pytest}) con caché de dependencias.
+    \item \textbf{Arranque Asíncrono del Gateway Kestrel:} Lanza el host de ASP.NET Core en segundo plano en \texttt{http://127.0.0.1:5000} registrando su identificador de proceso (PID) y redirigiendo la salida a \texttt{gateway.log}.
+    \item \textbf{Sondeo de Disponibilidad (\textit{Healthcheck Polling}):} Realiza un bucle de espera activa (hasta 30 segundos) consultando el endpoint de la Agent Card (\texttt{GET /.well-known/agent.json}) para asegurar que el servidor esté plenamente inicializado antes de emitir tráfico.
+    \item \textbf{Ejecución de Suites E2E:} Dispara tanto el ejecutor nativo \texttt{run\_simulation.py} como la suite \texttt{pytest}, validando la convergencia bilateral y el confinamiento de errores perimetrales.
+    \item \textbf{Diagnóstico y Apagado Limpio:} Si ocurre un fallo en cualquier paso previo (\texttt{if: failure()}), vuelca el contenido completo de \texttt{gateway.log} para facilitar el triaje. Finalmente, mediante \texttt{if: always()}, envía la señal de terminación al PID del Gateway asegurando la liberación limpia de puertos y recursos del sistema operativo.
+\end{enumerate}
+
