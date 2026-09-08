@@ -10,6 +10,9 @@ jobs:
   build-and-test:
     name: Build & E2E Verification
     runs-on: ubuntu-latest
+    env:
+      # Mitigate Node.js runtime deprecation warnings (e.g., DEP0040 punycode, DEP0169 url.parse) on Actions runners
+      NODE_OPTIONS: "--no-deprecation"
 
     steps:
       - name: Checkout repository
