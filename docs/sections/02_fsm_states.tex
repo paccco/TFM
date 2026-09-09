@@ -9,10 +9,10 @@ La máquina de estados finitos que gobierna la negociación se define formalment
 donde:
 \begin{itemize}
     \item $S = \{\texttt{on\_board}, \texttt{board\_format\_err}, \texttt{validation}, \texttt{val\_format\_err}, \texttt{ended}, \texttt{frozen}\}$ representa el conjunto de estados internos admisibles.
-    \item $\Sigma$ representa el alfabeto de eventos y transiciones provocadas por mensajes entrantes o resultados de evaluación de reglas.
+    \item $\Sigma$ representa el alfabeto de eventos y acciones entrantes (\texttt{propose}, \texttt{counter\_propose}, \texttt{validate}, \texttt{confirm}, \texttt{validation\_rejected}, \texttt{report\_format\_error}, \texttt{fix\_format}, \texttt{freeze}).
     \item $\delta: S \times \Sigma \rightarrow S$ es la función de transición determinista ejecutada proceduralmente en C\#.
     \item $s_0 = \texttt{on\_board}$ es el estado inicial tras completarse con éxito el handshake.
-    \item $F = \{\texttt{ended}, \texttt{frozen}\}$ es el conjunto de estados terminales.
+    \item $F = \{\texttt{ended}, \texttt{frozen}\}$ es el conjunto de estados terminales inmutables.
 \end{itemize}
 
 \subsection{Mapeo Bidireccional de Estados}
@@ -37,6 +37,40 @@ El estándar público A2A define estados genéricos para las tareas de agentes. 
 \label{tab:fsm_mapping}
 \end{table}
 
+\subsection{Matriz de Transiciones Legales de la FSM}
+El motor procedimental en C\# (\texttt{NegotiationFsmEngine}) aplica de forma estricta la función de transición $\delta$, rechazando cualquier acción fuera de matriz mediante \texttt{InvalidTransitionException}, tal como se detalla en el Cuadro~\ref{tab:fsm_transition_matrix}.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{lp{4.2cm}lp{4.8cm}}
+\toprule
+\textbf{Estado Origen ($s_t$)} & \textbf{Acción / Evento ($a$)} & \textbf{Estado Destino ($s_{t+1}$)} & \textbf{Efecto en Turno y Persistencia} \\
+\midrule
+\texttt{on\_board} & \texttt{propose}, \texttt{counter\_propose} & \texttt{on\_board} & Alterna turno al contraparte; persiste facts. \\
+\texttt{on\_board} & \texttt{validate} & \texttt{validation} & Transfiere a auditoría de reglas duras. \\
+\texttt{on\_board} & \texttt{report\_format\_error} & \texttt{board\_format\_err} & Mantiene turno en emisor para autocorrección. \\
+\texttt{on\_board} & \texttt{accept}, \texttt{complete} & \texttt{ended} & Cierra sesión; libera turno (\texttt{activeTurn} nulo). \\
+\texttt{on\_board} & \texttt{freeze}, \texttt{reject}, \texttt{cancel} & \texttt{frozen} & Estado terminal/pausa; bloquea turnos futuros. \\
+\midrule
+\texttt{board\_format\_err} & \texttt{fix\_format}, \texttt{retry} & \texttt{on\_board} & Autocorrección exitosa; reanuda diálogo. \\
+\texttt{board\_format\_err} & \texttt{freeze}, \texttt{abort} & \texttt{frozen} & Superación de reintentos o fallo irrecuperable. \\
+\midrule
+\texttt{validation} & \texttt{confirm}, \texttt{validation\_passed} & \texttt{ended} & Acuerdo auditado y firmado con éxito. \\
+\texttt{validation} & \texttt{validation\_rejected}, \texttt{renegotiate} & \texttt{on\_board} & Rechazo por guard; retorna a diálogo con feedback. \\
+\texttt{validation} & \texttt{report\_format\_error} & \texttt{val\_format\_err} & Discrepancia de esquema de backend en validación. \\
+\texttt{validation} & \texttt{freeze}, \texttt{reject} & \texttt{frozen} & Cancelación durante fase de validación. \\
+\midrule
+\texttt{val\_format\_err} & \texttt{fix\_format}, \texttt{validate} & \texttt{validation} & Subsanación de esquema; reintenta validación. \\
+\texttt{val\_format\_err} & \texttt{freeze}, \texttt{abort} & \texttt{frozen} & Abandono tras error de esquema. \\
+\midrule
+\texttt{ended} / \texttt{frozen} & \textit{Cualquier acción} & \textit{Rechazado} & Lanza \texttt{NegotiationTerminalException}. \\
+\bottomrule
+\end{tabular}
+\caption{Matriz de Transiciones Legales ejecutada por \texttt{NegotiationFsmEngine}.}
+\label{tab:fsm_transition_matrix}
+\end{table}
+
 \subsection{Ciclo de Negociación y Dinámica de Transiciones}
 La interacción dinámica entre los agentes negociadores se rige por una secuencia estricta de fases operativas y salvaguardas procedurales, tal como se ilustra en la Figura~\ref{fig:negotiation_cycle}. El ciclo se estructura en tres bloques fundamentales:
 
@@ -52,6 +86,23 @@ La interacción dinámica entre los agentes negociadores se rige por una secuenc
     \caption{Ciclo de negociación gobernado por la FSM determinista: alternancia de turnos y diálogo en \texttt{on\_board}, bucle de autocorrección sintáctica (\texttt{board\_format\_err}), suspensión temporal (\texttt{frozen}), compuerta de validación contra reglas de negocio (\texttt{validation}, \texttt{val\_format\_err}) y formalización final (\texttt{ended}).}
     \label{fig:negotiation_cycle}
 \end{figure}
+
+\subsection{Persistencia Dual-Track: Abstracciones y Puertos de Dominio}
+Para preservar la naturaleza 100\% \textit{stateless} del Orquestador sin comprometer la latencia ni la trazabilidad legal, el diseño desacopla el almacenamiento en dos puertos independientes bajo el principio de Inversión de Dependencias (DIP):
+
+\begin{enumerate}
+    \item \textbf{Puerto de Estado Vivo (\texttt{IHotStateStore} / Track 2):} Almacén de lectura/escritura síncrono de latencia sub-milisegundo ($<2$~ms). Rehidrata en cada turno el snapshot \texttt{HotStateSession} (\texttt{NegotiationId}, \texttt{CurrentState}, \texttt{ActiveTurn}, \texttt{LastSenderId}, \texttt{TurnIndex}, \texttt{ConsolidatedFacts}, \texttt{UpdatedAt}) y garantiza mutaciones atómicas.
+    \item \textbf{Puerto de Bitácora Forense (\texttt{ITranscriptStore} / Track 1):} Registro inmutable y append-only para auditoría contractual y análisis legal posterior. Su ejecución es desacoplada (out-of-band) y la FSM jamás lee de este almacén para tomar decisiones de transición.
+\end{enumerate}
+
+\subsection{Modelo de Excepciones de Dominio y Control de Turnos}
+El motor procedural de C\# intercepta y rechaza cualquier comportamiento anómalo o probabilístico mediante excepciones de dominio fuertemente tipadas:
+\begin{itemize}
+    \item \texttt{TurnConflictException}: Lanzada cuando un agente intenta emitir un mensaje fuera de su turno asignado ($s_{\text{emisor}} \neq \texttt{ActiveTurn}$).
+    \item \texttt{TurnOutOfOrderException}: Lanzada cuando el índice de turno recibido no es estrictamente creciente respecto a la secuencia monótona de la sesión ($t_{\text{recibido}} \le t_{\text{actual}}$).
+    \item \texttt{InvalidTransitionException}: Lanzada ante acciones ilegales según la matriz $\delta(s_t, a)$.
+    \item \texttt{NegotiationTerminalException}: Lanzada categóricamente ante cualquier intento de interactuar sobre una sesión que ya ha alcanzado un estado terminal (\texttt{ended} o \texttt{frozen}).
+\end{itemize}
 
 \subsection{Deterministic Guard y Reglas de Negocio}
 El componente \textit{Deterministic Guard} actúa como una compuerta infranqueable ante cualquier acuerdo propuesto por los agentes. Su evaluación es binaria y determinista, evaluando las siguientes restricciones operativas:

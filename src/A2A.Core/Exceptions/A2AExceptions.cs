@@ -52,12 +52,25 @@ public class TurnConflictException : A2AGatewayException
 {
     public string NegotiationId { get; }
     public long TurnIndex { get; }
+    public string? ExpectedSender { get; }
+    public string? ActualSender { get; }
 
     public TurnConflictException(string negotiationId, long turnIndex, string message, object? errorData = null)
         : base(JsonRpcConstants.TurnConflict, message, errorData ?? new { NegotiationId = negotiationId, TurnIndex = turnIndex })
     {
         NegotiationId = negotiationId;
         TurnIndex = turnIndex;
+    }
+
+    public TurnConflictException(string negotiationId, string expectedSender, string actualSender, long turnIndex)
+        : base(JsonRpcConstants.TurnConflict,
+               $"Turn conflict in negotiation '{negotiationId}': expected sender '{expectedSender}', but received message from '{actualSender}' at turn {turnIndex}.",
+               new { NegotiationId = negotiationId, ExpectedSender = expectedSender, ActualSender = actualSender, TurnIndex = turnIndex })
+    {
+        NegotiationId = negotiationId;
+        TurnIndex = turnIndex;
+        ExpectedSender = expectedSender;
+        ActualSender = actualSender;
     }
 }
 
@@ -74,5 +87,59 @@ public sealed class TurnOutOfOrderException : TurnConflictException
                new { NegotiationId = negotiationId, ReceivedTurn = receivedTurnIndex, ExpectedTurn = expectedTurnIndex })
     {
         ExpectedTurnIndex = expectedTurnIndex;
+    }
+}
+
+/// <summary>
+/// Excepción emitida ante intento de transición no permitida por la matriz legal de la FSM.
+/// </summary>
+public sealed class InvalidTransitionException : A2AGatewayException
+{
+    public string NegotiationId { get; }
+    public NegotiationState FromState { get; }
+    public string Action { get; }
+
+    public InvalidTransitionException(string negotiationId, NegotiationState from, string action)
+        : base(JsonRpcConstants.InvalidParams, 
+               $"Invalid FSM transition in negotiation '{negotiationId}': action '{action}' is not allowed from state '{from.ToWireState()}'.",
+               new { NegotiationId = negotiationId, FromState = from.ToWireState(), Action = action })
+    {
+        NegotiationId = negotiationId;
+        FromState = from;
+        Action = action;
+    }
+}
+
+/// <summary>
+/// Excepción emitida cuando no se encuentra la sesión de negociación en el almacén de estado.
+/// </summary>
+public sealed class NegotiationNotFoundException : A2AGatewayException
+{
+    public string NegotiationId { get; }
+
+    public NegotiationNotFoundException(string negotiationId)
+        : base(JsonRpcConstants.InvalidParams,
+               $"Negotiation session '{negotiationId}' was not found.",
+               new { NegotiationId = negotiationId })
+    {
+        NegotiationId = negotiationId;
+    }
+}
+
+/// <summary>
+/// Excepción emitida cuando se intenta ejecutar una acción sobre una sesión en estado terminal.
+/// </summary>
+public sealed class NegotiationTerminalException : A2AGatewayException
+{
+    public string NegotiationId { get; }
+    public NegotiationState State { get; }
+
+    public NegotiationTerminalException(string negotiationId, NegotiationState state)
+        : base(JsonRpcConstants.InvalidParams,
+               $"Negotiation session '{negotiationId}' is in terminal state '{state.ToWireState()}' and cannot accept further actions.",
+               new { NegotiationId = negotiationId, State = state.ToWireState() })
+    {
+        NegotiationId = negotiationId;
+        State = state;
     }
 }

@@ -1,0 +1,94 @@
+sequenceDiagram
+    autonumber
+    actor A as Agente A (Emisor)
+    participant GW as Gateway A2A
+    participant PL as Pipeline 4 Fases
+    participant ORQ as Orquestador FSM
+    participant DB as Redis (Hot State)
+    actor B as Agente B (Contraparte)
+
+    %% ----------------------------------------------------
+    %% BLOQUE 1: PERÍMETRO Y SEGURIDAD
+    %% ----------------------------------------------------
+    rect rgb(245, 245, 255)
+        note over A, GW: Bloque 1: Perímetro y Control de Acceso
+        A->>GW: POST /rpc (X-Agent-ID: A, Payload JSON-RPC 2.0)
+        
+        GW->>GW: Evaluar Rate Limiting particionado por AgentId
+        alt Cuota excedida
+            GW-->>A: HTTP 429 Too Many Requests (Fin)
+        end
+
+        GW->>GW: Extraer identidad (AgentIdentityContext = Agente A)
+    end
+
+    %% ----------------------------------------------------
+    %% BLOQUE 2: PIPELINE DE VALIDACIÓN EN CASCADA
+    %% ----------------------------------------------------
+    rect rgb(255, 245, 235)
+        note over GW, PL: Bloque 2: Pipeline de Validación en Cascada (Fail-Fast)
+        GW->>PL: Ejecutar pipeline modular
+
+        %% Fase 1
+        PL->>PL: Fase 1: Validar JSON, jsonrpc="2.0", method e id
+        alt JSON corrupto o campos base ausentes
+            PL-->>GW: Error JSON-RPC -32700 / -32600
+            GW-->>A: JSON-RPC Error (-32700 / -32600) (Fin)
+        end
+
+        %% Fase 2
+        PL->>PL: Fase 2: Validar esquema de params (tipado y requeridos)
+        alt Parámetros no conformes al esquema
+            PL-->>GW: Error JSON-RPC -32602 (Invalid params)
+            GW-->>A: JSON-RPC Error (-32602) (Fin)
+        end
+
+        %% Fase 3
+        PL->>PL: Fase 3: Validar semántica contra Agent Card (Skill existe)
+        alt Método no registrado en Agent Card
+            PL-->>GW: Error JSON-RPC -32601 (Method not found)
+            GW-->>A: JSON-RPC Error (-32601) (Fin)
+        end
+
+        %% Fase 4
+        PL->>PL: Fase 4: Validar estructura de turno y correlación (sender_id == Agente A)
+        alt Discrepancia de emisor o turno malformado
+            PL-->>GW: Error JSON-RPC -32602 (Identity mismatch / Invalid turn)
+            GW-->>A: JSON-RPC Error (-32602) (Fin)
+        end
+
+        PL-->>GW: Pipeline superado (OK)
+    end
+
+    %% ----------------------------------------------------
+    %% BLOQUE 3: DESPACHO Y GOBERNANZA FSM (ORQUESTADOR)
+    %% ----------------------------------------------------
+    rect rgb(235, 250, 235)
+        note over GW, DB: Bloque 3: Despacho Desacoplado y Validación de Turno en FSM
+        GW->>ORQ: INegotiationDispatcher.DispatchAsync(A2ACommandEnvelope)
+        ORQ->>DB: Leer Hot State (estado actual, turno activo, último emisor)
+        DB-->>ORQ: Retornar estado actual
+
+        alt Conflicto de turno (Turno duplicado o fuera de secuencia)
+            ORQ-->>GW: Excepción de dominio: TurnConflictException
+            GW-->>A: JSON-RPC Error -32001 (Turn Conflict / Out of Order) (Fin)
+        else Transición ilegal en FSM
+            ORQ-->>GW: Excepción de dominio: InvalidTransitionException
+            GW-->>A: JSON-RPC Error -32002 / HTTP 422 (Transición ilegal) (Fin)
+        end
+
+        ORQ->>DB: Actualización atómica: nuevo estado, turn + 1, last_sender = A
+        DB-->>ORQ: Persistencia OK
+        ORQ-->>GW: NegotiationDispatchResult (Success = true, acknowledged)
+    end
+
+    %% ----------------------------------------------------
+    %% BLOQUE 4: CONFIRMACIÓN Y REENVÍO A LA CONTRAPARTE
+    %% ----------------------------------------------------
+    rect rgb(240, 235, 255)
+        note over GW, B: Bloque 4: Confirmación y Notificación a la Contraparte
+        GW-->>A: JSON-RPC 2.0 Success {"jsonrpc": "2.0", "result": {...}, "id": id}
+        
+        ORQ-)B: Notificar propuesta validada (Webhook / SSE / HTTP POST)
+        note over B: Agente B recibe el facts_delta y prepara su contraoferta
+    end

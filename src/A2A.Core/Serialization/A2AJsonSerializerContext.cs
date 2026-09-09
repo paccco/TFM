@@ -23,6 +23,8 @@ namespace A2A.Core.Serialization;
 [JsonSerializable(typeof(A2ACommandEnvelope))]
 [JsonSerializable(typeof(NegotiationDispatchResult))]
 [JsonSerializable(typeof(AgentIdentity))]
+[JsonSerializable(typeof(NegotiationState))]
+[JsonSerializable(typeof(HotStateSession))]
 public partial class A2AJsonSerializerContext : JsonSerializerContext
 {
 }
