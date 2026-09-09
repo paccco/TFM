@@ -31,9 +31,13 @@ jobs:
         run: |
           dotnet test tests/unit/A2A.UnitTests/A2A.UnitTests.csproj -c Release --no-build --verbosity normal
 
-      - name: Run .NET Integration Tests
+      - name: Run .NET Integration Tests (Gateway)
         run: |
           dotnet test tests/integration/A2A.IntegrationTests/A2A.IntegrationTests.csproj -c Release --no-build --verbosity normal
+
+      - name: Run .NET Redis Infrastructure Tests (Testcontainers)
+        run: |
+          dotnet test tests/integration/A2A.Infrastructure.Tests/A2A.Infrastructure.Tests.csproj -c Release --no-build --verbosity normal
 
       - name: Setup Python 3.11
         uses: actions/setup-python@v5

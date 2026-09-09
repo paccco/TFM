@@ -3,7 +3,7 @@
 
 MAIN = main
 PDF = $(MAIN).pdf
-SRC = $(MAIN).tex sections/01_architecture.tex sections/02_fsm_states.tex sections/03_protocols.tex
+SRC = $(MAIN).tex sections/01_architecture.tex sections/02_fsm_states.tex sections/03_protocols.tex sections/04_persistence.tex
 
 .PHONY: all pdf pdflatex latexmk clean
 
