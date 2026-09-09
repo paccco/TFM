@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\A2A.Core\A2A.Core.csproj" />
     <ProjectReference Include="..\..\..\src\A2A.Gateway\A2A.Gateway.csproj" />
+    <ProjectReference Include="..\..\..\src\A2A.Orchestrator\A2A.Orchestrator.csproj" />
   </ItemGroup>
 
 </Project>
