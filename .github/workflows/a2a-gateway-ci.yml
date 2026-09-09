@@ -1,14 +1,13 @@
-name: A2A Gateway CI
+name: A2A CI Pipeline
 
 on:
   push:
-    branches: [ "main", "develop" ]
   pull_request:
     branches: [ "main", "develop" ]
 
 jobs:
   build-and-test:
-    name: Build & E2E Verification
+    name: Build & Test Verification
     runs-on: ubuntu-latest
     env:
       # Mitigate Node.js runtime deprecation warnings (e.g., DEP0040 punycode, DEP0169 url.parse) on Actions runners
@@ -27,6 +26,10 @@ jobs:
         run: |
           dotnet restore A2A.sln
           dotnet build A2A.sln -c Release --no-restore
+
+      - name: Run .NET Unit Tests (Orchestrator FSM & Core)
+        run: |
+          dotnet test tests/unit/A2A.UnitTests/A2A.UnitTests.csproj -c Release --no-build --verbosity normal
 
       - name: Run .NET Integration Tests
         run: |
