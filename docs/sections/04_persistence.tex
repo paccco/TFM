@@ -1,0 +1,109 @@
+\section{Infraestructura de Persistencia Track 2: Redis Hot State Store}
+\label{sec:persistence}
+
+\subsection{Visión General y Requisitos de Latencia}
+La arquitectura de persistencia del Orquestador A2A implementa un modelo \textit{Dual-Track} para desacoplar el almacenamiento de auditoría inmutable (Track 1 en base de datos SQL relacional) de la gestión del estado operativo de alta velocidad (Track 2).
+
+El \textbf{Hot State Store} (Track 2) tiene como objetivo primordial garantizar una latencia de lectura y escritura inferior a $2\text{ ms}$ en percentil 99 ($p99 < 2\text{ ms}$), permitiendo al orquestador operar de manera estrictamente \textit{stateless}. Cada petición entrante rehidrata el snapshot vivo de la negociación, evalúa las reglas de negocio y muta atómicamente el estado sin generar cuellos de botella ni bloqueos distribuidos pesados.
+
+\subsection{Formato y Nomenclatura de Claves en Redis}
+Para aislar las sesiones y permitir una indexación eficiente con tiempo constante $\mathcal{O}(1)$, las claves de Redis siguen un esquema de nombres canónico y estructurado por espacios de nombres (\textit{key namespacing}):
+
+\begin{equation}
+\text{Clave Redis} = \texttt{a2a:negotiation:\{negotiation\_id\}:hot\_state}
+\end{equation}
+
+Donde \texttt{\{negotiation\_id\}} representa el identificador unívoco de la negociación (típicamente UUIDv4 o prefijado por tenant).
+
+El objeto almacenado bajo dicha clave corresponde a la estructura inmutable \texttt{HotStateSession}, cuyos atributos esenciales se detallan en la Tabla~\ref{tab:hot_state_schema}.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}llp{8.5cm}@{}}
+\toprule
+\textbf{Campo JSON} & \textbf{Tipo C\# / JSON} & \textbf{Descripción Técnica y Propósito} \\ \midrule
+\texttt{negotiationId} & \texttt{string} & Identificador unívoco de la sesión de negociación A2A. \\
+\texttt{currentState}  & \texttt{NegotiationState} & Estado formal en la FSM (\texttt{on\_board}, \texttt{validation}, \texttt{ended}, \texttt{frozen}, etc.). \\
+\texttt{activeTurn}    & \texttt{string} & Identificador del agente que ostenta el turno exclusivo de respuesta. \\
+\texttt{lastSenderId}  & \texttt{string} & Identificador del último agente emisor que remitió una propuesta/mensaje. \\
+\texttt{turnIndex}     & \texttt{long} & Contador monótono de turnos transcurridos para control de concurrencia. \\
+\texttt{consolidatedFacts} & \texttt{JsonElement?} & Hechos consolidados actuales (\textit{Fact Sheet}: precios, volúmenes, cláusulas). \\
+\texttt{updatedAt}     & \texttt{DateTimeOffset} & Marca de tiempo UTC de la última mutación atómica del estado. \\ \bottomrule
+\end{tabular}
+\caption{Estructura formal del documento de sesión en el Hot State Store.}
+\label{tab:hot_state_schema}
+\end{table}
+
+\subsection{Estrategia de Concurrencia y Atomicidad mediante Scripts Lua}
+En entornos multi-agente concurrentes, múltiples agentes o réplicas del Gateway podrían intentar emitir propuestas simultáneas sobre la misma sesión. Para evitar condiciones de carrera (\textit{race conditions}), escrituras obsoletas (\textit{lost updates}) y sobreescrituras desordenadas de turnos, el adaptador \texttt{RedisHotStateStore} delega la mutación a un script Lua ejecutado atómicamente en el motor de Redis.
+
+Dado que Redis procesa los scripts Lua en un único hilo de ejecución garantizando aislamiento transaccional completo (\textit{serializable isolation}), la evaluación de la monotonía del turno y la persistencia del nuevo estado ocurren en una única operación atómica indivisible:
+
+\begin{lstlisting}[language={[ANSI]C}, caption={Script Lua para mutación atómica y protección monótona de turnos.}]
+local key = KEYS[1]
+local payload = ARGV[1]
+local ttlSeconds = tonumber(ARGV[2])
+local newTurnIndex = tonumber(ARGV[3])
+
+local existing = redis.call('GET', key)
+if existing then
+    local currentTurn = string.match(existing, '"turnIndex"%s*:%s*(%d+)')
+    if currentTurn and tonumber(currentTurn) > newTurnIndex then
+        return 0 -- Rechazo por turno obsoleto (concurrencia detectada)
+    end
+end
+
+if ttlSeconds and ttlSeconds > 0 then
+    redis.call('SET', key, payload, 'EX', ttlSeconds)
+else
+    redis.call('SET', key, payload)
+end
+
+return 1 -- Mutacion atomica aplicada exitosamente
+\end{lstlisting}
+
+\subsubsection{Protocolo de Manejo de Conflictos}
+Si el script Lua retorna el código \texttt{0}, significa que una transacción concurrente con un índice de turno superior ya fue consolidada en Redis. En dicho escenario, el adaptador de infraestructura lanza inmediatamente una excepción de dominio tipada \texttt{TurnConflictException}, la cual es capturada por el middleware del Gateway y mapeada al código de error estándar JSON-RPC \texttt{-32001} (\textit{Turn Conflict}).
+
+\subsection{Serialización UTF-8 de Alto Rendimiento con Source Generators}
+Para satisfacer el umbral de latencia de ultra-baja sobrecarga (<2 ms), se descarta el uso de serializadores basados en reflexión en tiempo de ejecución (\textit{reflection-based serializers}). En su lugar, el sistema aprovecha los \textbf{C\# Source Generators} de \texttt{System.Text.Json} introducidos en .NET:
+
+\begin{itemize}
+    \item \textbf{Generación en Tiempo de Compilación:} La clase \texttt{A2AJsonSerializerContext} genera código IL estático y determinista para la serialización y deserialización de \texttt{HotStateSession}.
+    \item \textbf{Cero Asignaciones Innecesarias en Heap:} Los datos leídos desde Redis (\texttt{RedisValue}) se deserializan directamente a partir de secuencias de bytes UTF-8 (\texttt{byte[]}), reduciendo la presión sobre el recolector de basura (\textit{Garbage Collector}).
+    \item \textbf{Serialización Estricta CamelCase:} Garantiza total compatibilidad e interoperabilidad con las especificaciones JSON del protocolo A2A.
+\end{itemize}
+
+\subsection{Gestión del Tiempo de Vida (TTL) y Limpieza de Sesiones}
+Para impedir el consumo indiscriminado de memoria volátil en Redis por sesiones abandonadas o concluidas:
+\begin{enumerate}
+    \item \textbf{TTL Deslizante por Defecto:} Cada operación \texttt{SaveAsync} renueva el tiempo de vida de la clave utilizando un valor configurable \texttt{DefaultTtl} (por defecto, 24 horas).
+    \item \textbf{Eliminación Explícita (\texttt{DeleteAsync}):} Al alcanzar un estado terminal (\texttt{Ended} o \texttt{Frozen}) o ser archivada formalmente en el Track 1 (SQL), la sesión puede ser purgada deterministamente de Redis mediante el comando \texttt{DEL}, liberando memoria de inmediato.
+\end{enumerate}
+
+\subsection{Configuración e Inyección de Dependencias (.NET 9)}
+La capa de infraestructura expone el método de extensión \texttt{AddA2AInfrastructure} sobre \texttt{IServiceCollection}, registrando el multiplexor de conexiones de StackExchange.Redis (\texttt{IConnectionMultiplexer}) como Singleton y proveyendo la implementación \texttt{RedisHotStateStore} para el puerto de dominio \texttt{IHotStateStore}:
+
+\begin{lstlisting}[language=C, caption={Configuración de Redis Infrastructure en ServiceCollectionExtensions.cs.}]
+public static IServiceCollection AddA2AInfrastructure(
+    this IServiceCollection services,
+    IConfiguration configuration)
+{
+    var section = configuration.GetSection("RedisHotState");
+    services.Configure<RedisHotStateOptions>(section);
+
+    var redisConnStr = configuration.GetConnectionString("Redis")
+        ?? section["ConnectionString"]
+        ?? "localhost:6379";
+
+    services.TryAddSingleton<IConnectionMultiplexer>(_ => {
+        var configOptions = ConfigurationOptions.Parse(redisConnStr);
+        configOptions.AbortOnConnectFail = false;
+        return ConnectionMultiplexer.Connect(configOptions);
+    });
+
+    services.TryAddSingleton<IHotStateStore, RedisHotStateStore>();
+    return services;
+}
+\end{lstlisting}
